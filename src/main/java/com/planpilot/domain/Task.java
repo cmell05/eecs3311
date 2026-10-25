@@ -51,6 +51,23 @@ public abstract class Task {
                 : TaskStatus.IN_PROGRESS;
     }
 
+    public void setCompletedHours(double completedHours) {
+        if (!Double.isFinite(completedHours)
+                || completedHours < 0
+                || completedHours > estimatedHours) {
+            throw new IllegalArgumentException(
+                    "Completed hours must be between zero and estimated hours.");
+        }
+        this.completedHours = completedHours;
+        if (completedHours == 0) {
+            status = TaskStatus.NOT_STARTED;
+        } else if (completedHours == estimatedHours) {
+            status = TaskStatus.COMPLETED;
+        } else {
+            status = TaskStatus.IN_PROGRESS;
+        }
+    }
+
     public void markCompleted() {
         completedHours = estimatedHours;
         status = TaskStatus.COMPLETED;
