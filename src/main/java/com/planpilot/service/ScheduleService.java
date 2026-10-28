@@ -3,6 +3,7 @@ package com.planpilot.service;
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.Schedule;
 import com.planpilot.domain.UserPreferences;
+import com.planpilot.event.PlanningEventPublisher;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -16,6 +17,7 @@ public class ScheduleService {
     private final AvailabilityService availabilityService;
     private final SchedulePlanner schedulePlanner;
     private final UserPreferences preferences;
+    private final PlanningEventPublisher eventPublisher;
     private Schedule currentSchedule;
 
     public ScheduleService(
@@ -23,6 +25,16 @@ public class ScheduleService {
             AvailabilityService availabilityService,
             SchedulePlanner schedulePlanner,
             UserPreferences preferences) {
+        this(taskService, availabilityService, schedulePlanner, preferences,
+                new PlanningEventPublisher());
+    }
+
+    public ScheduleService(
+            TaskService taskService,
+            AvailabilityService availabilityService,
+            SchedulePlanner schedulePlanner,
+            UserPreferences preferences,
+            PlanningEventPublisher eventPublisher) {
         this.taskService = Objects.requireNonNull(
                 taskService, "Task service cannot be null.");
         this.availabilityService = Objects.requireNonNull(
@@ -31,6 +43,8 @@ public class ScheduleService {
                 schedulePlanner, "Schedule planner cannot be null.");
         this.preferences = Objects.requireNonNull(
                 preferences, "User preferences cannot be null.");
+        this.eventPublisher = Objects.requireNonNull(
+                eventPublisher, "Event publisher cannot be null.");
     }
 
     public Schedule generateSchedule(LocalDate start, LocalDate end) {
@@ -47,6 +61,7 @@ public class ScheduleService {
                 windowStart, windowEnd);
         currentSchedule = schedulePlanner.createSchedule(
                 taskService.getOpenTasks(), availability, preferences, start, end);
+        eventPublisher.notifyObservers();
         return currentSchedule;
     }
 
@@ -68,6 +83,7 @@ public class ScheduleService {
     public void markScheduleOutdated() {
         requireCurrentSchedule();
         currentSchedule.markOutdated();
+        eventPublisher.notifyObservers();
     }
 
     private void requireCurrentSchedule() {

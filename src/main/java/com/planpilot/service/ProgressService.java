@@ -4,6 +4,7 @@ import com.planpilot.domain.ProgressRecord;
 import com.planpilot.domain.ProgressStatus;
 import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.Task;
+import com.planpilot.event.PlanningEventPublisher;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -18,6 +19,16 @@ public class ProgressService {
 
     private final List<ProgressRecord> history = new ArrayList<>();
     private final Map<Task, Double> baselineCompletedHours = new IdentityHashMap<>();
+    private final PlanningEventPublisher eventPublisher;
+
+    public ProgressService() {
+        this(new PlanningEventPublisher());
+    }
+
+    public ProgressService(PlanningEventPublisher eventPublisher) {
+        this.eventPublisher = Objects.requireNonNull(
+                eventPublisher, "Event publisher cannot be null.");
+    }
 
     public void recordProgress(
             StudyBlock block, ProgressStatus status, double hours) {
@@ -63,6 +74,7 @@ public class ProgressService {
         }
 
         task.setCompletedHours(completedHours);
+        eventPublisher.notifyObservers();
     }
 
     public List<ProgressRecord> getHistoryForTask(Task task) {

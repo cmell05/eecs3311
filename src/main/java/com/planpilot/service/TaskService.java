@@ -2,6 +2,7 @@ package com.planpilot.service;
 
 import com.planpilot.domain.AcademicTask;
 import com.planpilot.domain.Task;
+import com.planpilot.event.PlanningEventPublisher;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -10,11 +11,19 @@ import java.util.Objects;
 
 public class TaskService {
     private final CourseService courseService;
+    private final PlanningEventPublisher eventPublisher;
     private final Map<String, Task> tasks = new LinkedHashMap<>();
 
     public TaskService(CourseService courseService) {
+        this(courseService, new PlanningEventPublisher());
+    }
+
+    public TaskService(
+            CourseService courseService, PlanningEventPublisher eventPublisher) {
         this.courseService = Objects.requireNonNull(
                 courseService, "Course service cannot be null.");
+        this.eventPublisher = Objects.requireNonNull(
+                eventPublisher, "Event publisher cannot be null.");
     }
 
     public Task createTask(Task taskData) {
@@ -24,6 +33,7 @@ public class TaskService {
                     "A task with id " + taskData.getId() + " already exists.");
         }
         tasks.put(taskData.getId(), taskData);
+        eventPublisher.notifyObservers();
         return taskData;
     }
 
@@ -31,12 +41,14 @@ public class TaskService {
         validateTask(task);
         requireExistingTask(task.getId());
         tasks.put(task.getId(), task);
+        eventPublisher.notifyObservers();
     }
 
     public void deleteTask(String taskId) {
         requireText(taskId, "Task id");
         requireExistingTask(taskId);
         tasks.remove(taskId);
+        eventPublisher.notifyObservers();
     }
 
     public List<Task> getOpenTasks() {
