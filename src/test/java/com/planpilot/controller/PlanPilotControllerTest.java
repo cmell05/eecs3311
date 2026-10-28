@@ -18,6 +18,7 @@ import com.planpilot.service.ProgressService;
 import com.planpilot.service.ReplanOption;
 import com.planpilot.service.SchedulePlanner;
 import com.planpilot.service.ScheduleService;
+import com.planpilot.service.ScheduleInfeasibleException;
 import com.planpilot.service.TaskService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -92,6 +93,35 @@ class PlanPilotControllerTest {
 
         assertEquals(0.5, task.getCompletedHours(), 0.0001);
         assertEquals(1, controller.getProgressHistory(task).size());
+    }
+
+    @Test
+    void supportsCompletedAndSkippedProgressCorrectionsThroughFacade() {
+        Task task = task("T1", 2);
+        StudyBlock block = new StudyBlock(
+                "B1", task, start, start.plusHours(1));
+
+        controller.updateProgress(
+                block, ProgressStatus.COMPLETED, block.durationHours());
+        controller.updateProgress(block, ProgressStatus.SKIPPED, 0);
+
+        assertEquals(0, task.getCompletedHours(), 0.0001);
+        assertEquals(ProgressStatus.SKIPPED, block.getProgressStatus());
+        assertEquals(2, controller.getProgressHistory(task).size());
+    }
+
+    @Test
+    void exposesPartialScheduleAndDeficitWhenGenerationIsInfeasible() {
+        controller.addTask(task("T1", 2));
+        controller.addAvailability(new AvailabilityBlock(
+                "A1", start, start.plusHours(1), AvailabilityType.AVAILABLE));
+
+        ScheduleInfeasibleException exception = assertThrows(
+                ScheduleInfeasibleException.class,
+                () -> controller.generateSchedule(date, date));
+
+        assertEquals(1, exception.getPartialSchedule().getStudyBlocks().size());
+        assertEquals(1, exception.getWorkloadDeficitHours(), 0.0001);
     }
 
     @Test

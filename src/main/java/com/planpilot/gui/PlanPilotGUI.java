@@ -8,7 +8,10 @@ import com.planpilot.domain.AvailabilityType;
 import com.planpilot.domain.Course;
 import com.planpilot.domain.GeneralTask;
 import com.planpilot.domain.PriorityLevel;
+import com.planpilot.domain.ProgressStatus;
+import com.planpilot.domain.Schedule;
 import com.planpilot.domain.StudyPeriod;
+import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.Task;
 import com.planpilot.domain.UserPreferences;
 import com.planpilot.event.PlanningEventPublisher;
@@ -19,6 +22,7 @@ import com.planpilot.service.CourseService;
 import com.planpilot.service.ProgressService;
 import com.planpilot.service.SchedulePlanner;
 import com.planpilot.service.ScheduleService;
+import com.planpilot.service.ScheduleInfeasibleException;
 import com.planpilot.service.TaskService;
 import com.planpilot.strategy.BalancedPriorityStrategy;
 import javafx.application.Application;
@@ -54,6 +58,12 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private BorderPane root;
     private Label statusLabel;
     private Page currentPage = Page.COURSES;
+    private Schedule displayedSchedule;
+    private LocalDate planningStart = LocalDate.now();
+    private LocalDate planningEnd = LocalDate.now().plusDays(7);
+    private String scheduleWarning = "";
+    private boolean scheduleMayBeOutdated;
+    private boolean scheduleGenerationInProgress;
 
     public static void main(String[] args) {
         launch(args);
@@ -91,8 +101,13 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     public void onPlanningStateChanged() {
         Runnable refresh = () -> {
             if (root != null) {
+                if (displayedSchedule != null && !scheduleGenerationInProgress) {
+                    scheduleMayBeOutdated = true;
+                }
                 showPage(currentPage);
-                statusLabel.setText("Planning state updated");
+                statusLabel.setText(scheduleMayBeOutdated
+                        ? "Planning state updated; the schedule may be outdated"
+                        : "Planning state updated");
             }
         };
         if (Platform.isFxApplicationThread()) {
@@ -126,10 +141,8 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             case COURSES -> createCoursesPage();
             case TASKS -> createTasksPage();
             case AVAILABILITY -> createAvailabilityPage();
-            case SCHEDULE -> createPlaceholderPage(
-                    "Schedule", "Generate and review schedule controls will be added later.");
-            case PROGRESS -> createPlaceholderPage(
-                    "Progress", "Progress reporting controls will be added later.");
+            case SCHEDULE -> createSchedulePage();
+            case PROGRESS -> createProgressPage();
         });
         statusLabel.setText(page.label);
     }
@@ -284,8 +297,203 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 createEditor("Add Availability or Commitment", form, addButton));
     }
 
-    private Node createPlaceholderPage(String title, String description) {
-        return createPage(title, description, new Label("Navigation shell ready."));
+    private Node createSchedulePage() {
+        DatePicker startField = new DatePicker(planningStart);
+        DatePicker endField = new DatePicker(planningEnd);
+        Button generateButton = new Button("Generate Schedule");
+        generateButton.setOnAction(event -> generateSchedule(startField, endField));
+
+        HBox controls = new HBox(
+                10, new Label("Start:"), startField,
+                new Label("End:"), endField, generateButton);
+        controls.setAlignment(Pos.CENTER_LEFT);
+
+        ListView<String> blockList = new ListView<>(FXCollections.observableArrayList(
+                scheduleBlocks().stream().map(this::formatStudyBlock).toList()));
+        blockList.setPlaceholder(new Label(
+                displayedSchedule == null
+                        ? "Choose a planning window and generate a schedule."
+                        : "No study blocks were needed for this window."));
+
+        Label summary = new Label(scheduleSummary());
+        Label warning = new Label(scheduleWarningText());
+        warning.setWrapText(true);
+        warning.setStyle("-fx-text-fill: #9a5a00; -fx-font-weight: bold;");
+        warning.setVisible(!warning.getText().isBlank());
+        warning.setManaged(warning.isVisible());
+
+        VBox content = new VBox(12, controls, summary, warning, blockList);
+        VBox.setVgrow(blockList, Priority.ALWAYS);
+        return createPage(
+                "Schedule", "Generate a deterministic schedule for a planning window.",
+                content);
+    }
+
+    private void generateSchedule(DatePicker startField, DatePicker endField) {
+        try {
+            planningStart = requiredValue(startField.getValue(), "Planning start date");
+            planningEnd = requiredValue(endField.getValue(), "Planning end date");
+            if (planningEnd.isBefore(planningStart)) {
+                throw new IllegalArgumentException(
+                        "Planning end date cannot be before the start date.");
+            }
+
+            scheduleGenerationInProgress = true;
+            displayedSchedule = controller.generateSchedule(planningStart, planningEnd);
+            scheduleWarning = "";
+            scheduleMayBeOutdated = false;
+            showPage(Page.SCHEDULE);
+            statusLabel.setText("Schedule generated");
+        } catch (ScheduleInfeasibleException exception) {
+            displayedSchedule = exception.getPartialSchedule();
+            scheduleWarning = String.format(
+                    "The full workload does not fit. %.2f hours remain unscheduled; "
+                            + "the blocks below are the feasible partial schedule.",
+                    exception.getWorkloadDeficitHours());
+            scheduleMayBeOutdated = false;
+            showPage(Page.SCHEDULE);
+            statusLabel.setText("Schedule is infeasible");
+        } catch (RuntimeException exception) {
+            showError(errorMessage(exception));
+        } finally {
+            scheduleGenerationInProgress = false;
+        }
+    }
+
+    private Node createProgressPage() {
+        List<StudyBlock> blocks = scheduleBlocks();
+        ListView<String> blockList = new ListView<>(FXCollections.observableArrayList(
+                blocks.stream().map(this::formatProgressBlock).toList()));
+        blockList.setPlaceholder(new Label(
+                "Generate a schedule before recording progress."));
+
+        Label selectionHelp = new Label(
+                "Select a study block, then record its result.");
+        selectionHelp.setWrapText(true);
+        TextField partialHoursField = new TextField();
+        partialHoursField.setPromptText("Hours completed");
+
+        Button completedButton = new Button("Completed");
+        completedButton.setMaxWidth(Double.MAX_VALUE);
+        completedButton.setOnAction(event -> {
+            StudyBlock block = selectedBlock(blockList, blocks);
+            if (block != null) {
+                recordProgress(block, ProgressStatus.COMPLETED,
+                        block.durationHours(), "Work marked completed");
+            }
+        });
+
+        Button partialButton = new Button("Partially Completed");
+        partialButton.setMaxWidth(Double.MAX_VALUE);
+        partialButton.setOnAction(event -> {
+            StudyBlock block = selectedBlock(blockList, blocks);
+            if (block != null) {
+                try {
+                    double hours = positiveDouble(
+                            partialHoursField, "Completed hours");
+                    recordProgress(block, ProgressStatus.PARTIAL, hours,
+                            "Partial progress recorded");
+                } catch (RuntimeException exception) {
+                    showError(errorMessage(exception));
+                }
+            }
+        });
+
+        Button skippedButton = new Button("Skipped");
+        skippedButton.setMaxWidth(Double.MAX_VALUE);
+        skippedButton.setOnAction(event -> {
+            StudyBlock block = selectedBlock(blockList, blocks);
+            if (block != null) {
+                recordProgress(block, ProgressStatus.SKIPPED, 0,
+                        "Work marked skipped");
+            }
+        });
+
+        Label warning = new Label(scheduleMayBeOutdated && displayedSchedule != null
+                ? "Planning data changed. This schedule may be outdated; "
+                        + "replanning still requires user action."
+                : "");
+        warning.setWrapText(true);
+        warning.setStyle("-fx-text-fill: #9a5a00; -fx-font-weight: bold;");
+        warning.setVisible(!warning.getText().isBlank());
+        warning.setManaged(warning.isVisible());
+
+        VBox editor = new VBox(
+                10, selectionHelp, new Label("Partial hours:"), partialHoursField,
+                completedButton, partialButton, skippedButton);
+        editor.setPrefWidth(240);
+        boolean noBlocks = blocks.isEmpty();
+        completedButton.setDisable(noBlocks);
+        partialButton.setDisable(noBlocks);
+        skippedButton.setDisable(noBlocks);
+
+        HBox main = new HBox(20, blockList, editor);
+        HBox.setHgrow(blockList, Priority.ALWAYS);
+        VBox content = new VBox(12, warning, main);
+        VBox.setVgrow(main, Priority.ALWAYS);
+        return createPage(
+                "Progress", "Record outcomes for scheduled study blocks.", content);
+    }
+
+    private StudyBlock selectedBlock(
+            ListView<String> blockList, List<StudyBlock> blocks) {
+        int selectedIndex = blockList.getSelectionModel().getSelectedIndex();
+        if (selectedIndex < 0 || selectedIndex >= blocks.size()) {
+            showError("Select a study block first.");
+            return null;
+        }
+        return blocks.get(selectedIndex);
+    }
+
+    private void recordProgress(
+            StudyBlock block, ProgressStatus progressStatus,
+            double hours, String successMessage) {
+        executeAction(successMessage,
+                () -> controller.updateProgress(block, progressStatus, hours));
+    }
+
+    private List<StudyBlock> scheduleBlocks() {
+        return displayedSchedule == null
+                ? List.of()
+                : displayedSchedule.getStudyBlocks();
+    }
+
+    private String scheduleSummary() {
+        if (displayedSchedule == null) {
+            return "No schedule has been generated.";
+        }
+        return displayedSchedule.getStartDate() + " to "
+                + displayedSchedule.getEndDate() + " | "
+                + scheduleBlocks().size() + " study block(s) | "
+                + displayedSchedule.getStatus();
+    }
+
+    private String scheduleWarningText() {
+        String outdatedWarning = scheduleMayBeOutdated && displayedSchedule != null
+                ? "Planning data changed. This schedule may be outdated; "
+                        + "generate it again only when you choose to replan."
+                : "";
+        if (scheduleWarning.isBlank()) {
+            return outdatedWarning;
+        }
+        return outdatedWarning.isBlank()
+                ? scheduleWarning
+                : scheduleWarning + " " + outdatedWarning;
+    }
+
+    private String formatStudyBlock(StudyBlock block) {
+        return block.getStart() + " to " + block.getEnd().toLocalTime()
+                + " | " + block.getTask().getTitle()
+                + " | " + String.format("%.2fh", block.durationHours());
+    }
+
+    private String formatProgressBlock(StudyBlock block) {
+        Task task = block.getTask();
+        return formatStudyBlock(block)
+                + " | block: " + block.getProgressStatus()
+                + " | task: " + String.format(
+                        "%.2f/%.2fh (%s)", task.getCompletedHours(),
+                        task.getEstimatedHours(), task.getStatus());
     }
 
     private Node createManagementPage(
@@ -338,10 +546,14 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             showPage(currentPage);
             statusLabel.setText(successMessage);
         } catch (RuntimeException exception) {
-            showError(exception.getMessage() == null
-                    ? exception.getClass().getSimpleName()
-                    : exception.getMessage());
+            showError(errorMessage(exception));
         }
+    }
+
+    private String errorMessage(RuntimeException exception) {
+        return exception.getMessage() == null
+                ? exception.getClass().getSimpleName()
+                : exception.getMessage();
     }
 
     private void showError(String message) {
