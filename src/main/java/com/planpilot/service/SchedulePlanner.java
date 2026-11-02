@@ -4,6 +4,7 @@ import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.AvailabilityType;
 import com.planpilot.domain.Schedule;
 import com.planpilot.domain.StudyBlock;
+import com.planpilot.domain.StudyPeriod;
 import com.planpilot.domain.Task;
 import com.planpilot.domain.UserPreferences;
 import com.planpilot.strategy.PriorityStrategy;
@@ -66,7 +67,9 @@ public class SchedulePlanner {
 
         String scheduleId = "schedule-" + startDate + "-" + endDate;
         Schedule schedule = new Schedule(scheduleId, startDate, endDate);
-        List<TimeSlot> slots = buildFreeTimeSlots(availability, startDate, endDate);
+        List<TimeSlot> slots = prioritizeStudyPeriod(
+                buildFreeTimeSlots(availability, startDate, endDate),
+                preferences.getPreferredStudyPeriod());
         List<Task> prioritizedTasks = tasks.stream()
                 .map(Objects::requireNonNull)
                 .filter(task -> task.getRemainingHours() > EPSILON)
@@ -145,6 +148,76 @@ public class SchedulePlanner {
             availableSegments = subtractCommitment(availableSegments, commitment);
         }
         return mergeSlots(availableSegments);
+    }
+
+    private List<TimeSlot> prioritizeStudyPeriod(
+            List<TimeSlot> slots, StudyPeriod preferredStudyPeriod) {
+        if (preferredStudyPeriod == StudyPeriod.ANY) {
+            return slots;
+        }
+
+        int preferredStartHour = switch (preferredStudyPeriod) {
+            case MORNING -> 6;
+            case AFTERNOON -> 12;
+            case EVENING -> 17;
+            case ANY -> throw new IllegalStateException("ANY is handled above.");
+        };
+        int preferredEndHour = switch (preferredStudyPeriod) {
+            case MORNING -> 12;
+            case AFTERNOON -> 17;
+            case EVENING -> 24;
+            case ANY -> throw new IllegalStateException("ANY is handled above.");
+        };
+
+        List<TimeSlot> preferredSlots = new ArrayList<>();
+        List<TimeSlot> fallbackSlots = new ArrayList<>();
+        for (TimeSlot slot : slots) {
+            List<TimeSlot> remaining = new ArrayList<>();
+            remaining.add(new TimeSlot(slot.cursor, slot.end));
+            for (LocalDate day = slot.cursor.toLocalDate();
+                 !day.isAfter(slot.end.toLocalDate());
+                 day = day.plusDays(1)) {
+                LocalDateTime preferredStart = day.atTime(preferredStartHour, 0);
+                LocalDateTime preferredEnd = preferredEndHour == 24
+                        ? day.plusDays(1).atStartOfDay()
+                        : day.atTime(preferredEndHour, 0);
+                LocalDateTime intersectionStart = laterOf(
+                        slot.cursor, preferredStart);
+                LocalDateTime intersectionEnd = earlierOf(slot.end, preferredEnd);
+                if (intersectionStart.isBefore(intersectionEnd)) {
+                    preferredSlots.add(new TimeSlot(
+                            intersectionStart, intersectionEnd));
+                    remaining = subtractInterval(
+                            remaining, intersectionStart, intersectionEnd);
+                }
+            }
+            fallbackSlots.addAll(remaining);
+        }
+
+        Comparator<TimeSlot> byStart = Comparator.comparing(slot -> slot.cursor);
+        preferredSlots.sort(byStart);
+        fallbackSlots.sort(byStart);
+        List<TimeSlot> prioritized = new ArrayList<>(preferredSlots);
+        prioritized.addAll(fallbackSlots);
+        return prioritized;
+    }
+
+    private List<TimeSlot> subtractInterval(
+            List<TimeSlot> slots, LocalDateTime start, LocalDateTime end) {
+        List<TimeSlot> result = new ArrayList<>();
+        for (TimeSlot slot : slots) {
+            if (!overlaps(slot.cursor, slot.end, start, end)) {
+                result.add(slot);
+                continue;
+            }
+            if (slot.cursor.isBefore(start)) {
+                result.add(new TimeSlot(slot.cursor, earlierOf(slot.end, start)));
+            }
+            if (end.isBefore(slot.end)) {
+                result.add(new TimeSlot(laterOf(slot.cursor, end), slot.end));
+            }
+        }
+        return result;
     }
 
     private List<TimeSlot> subtractCommitment(

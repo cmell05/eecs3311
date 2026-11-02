@@ -152,6 +152,45 @@ class SchedulePlannerTest {
         assertTrue(conflictDetector.isScheduleFeasible(schedule, availability));
     }
 
+    @Test
+    void morningPreferenceUsesMorningAvailabilityFirst() {
+        assertPreferredStart(StudyPeriod.MORNING, date.atTime(6, 0));
+    }
+
+    @Test
+    void afternoonPreferenceUsesAfternoonAvailabilityFirst() {
+        assertPreferredStart(StudyPeriod.AFTERNOON, date.atTime(12, 0));
+    }
+
+    @Test
+    void eveningPreferenceUsesEveningAvailabilityFirst() {
+        assertPreferredStart(StudyPeriod.EVENING, date.atTime(17, 0));
+    }
+
+    @Test
+    void preferredPeriodFallsBackWhenPreferredTimeIsUnavailable() {
+        Schedule schedule = createSchedule(
+                List.of(task(
+                        "T1", 1, PriorityLevel.MEDIUM, start.plusDays(1))),
+                List.of(available("A1", start, start.plusHours(1))),
+                preferences(60, 0, StudyPeriod.EVENING));
+
+        assertEquals(start, schedule.getStudyBlocks().get(0).getStart());
+    }
+
+    private void assertPreferredStart(
+            StudyPeriod studyPeriod, LocalDateTime expectedStart) {
+        LocalDateTime availabilityStart = date.atTime(5, 0);
+        LocalDateTime availabilityEnd = date.atTime(21, 0);
+        Schedule schedule = createSchedule(
+                List.of(task(
+                        "T1", 1, PriorityLevel.MEDIUM, start.plusDays(1))),
+                List.of(available("A1", availabilityStart, availabilityEnd)),
+                preferences(60, 0, studyPeriod));
+
+        assertEquals(expectedStart, schedule.getStudyBlocks().get(0).getStart());
+    }
+
     private Schedule createSchedule(
             List<? extends Task> tasks,
             List<AvailabilityBlock> availability,
@@ -172,6 +211,11 @@ class SchedulePlannerTest {
     }
 
     private UserPreferences preferences(int maxSessionMinutes, int breakMinutes) {
-        return new UserPreferences(maxSessionMinutes, StudyPeriod.ANY, breakMinutes);
+        return preferences(maxSessionMinutes, breakMinutes, StudyPeriod.ANY);
+    }
+
+    private UserPreferences preferences(
+            int maxSessionMinutes, int breakMinutes, StudyPeriod studyPeriod) {
+        return new UserPreferences(maxSessionMinutes, studyPeriod, breakMinutes);
     }
 }
