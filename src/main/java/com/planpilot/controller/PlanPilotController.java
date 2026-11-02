@@ -7,6 +7,7 @@ import com.planpilot.domain.ProgressStatus;
 import com.planpilot.domain.Schedule;
 import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.Task;
+import com.planpilot.domain.UserPreferences;
 import com.planpilot.service.AvailabilityService;
 import com.planpilot.service.CourseService;
 import com.planpilot.service.ProgressService;
@@ -112,6 +113,14 @@ public class PlanPilotController {
 
     public Schedule requestReplan(ReplanOption option) {
         return scheduleService.replan(option);
+    }
+
+    public UserPreferences getUserPreferences() {
+        return scheduleService.getPreferences();
+    }
+
+    public void updateUserPreferences(UserPreferences preferences) {
+        scheduleService.updatePreferences(preferences);
     }
 
     public void markScheduleOutdated() {

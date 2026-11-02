@@ -138,6 +138,19 @@ class PlanPilotControllerTest {
     }
 
     @Test
+    void delegatesUserPreferenceManagement() {
+        UserPreferences preferences = new UserPreferences(
+                45, StudyPeriod.EVENING, 10);
+
+        controller.updateUserPreferences(preferences);
+
+        UserPreferences saved = controller.getUserPreferences();
+        assertEquals(45, saved.getMaxSessionLength());
+        assertEquals(StudyPeriod.EVENING, saved.getPreferredStudyPeriod());
+        assertEquals(10, saved.getBreakLength());
+    }
+
+    @Test
     void exposesNotReadyIntegrationPointsWithoutFakeResponses() {
         Task task = task("T1", 1);
 

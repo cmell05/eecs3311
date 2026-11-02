@@ -103,4 +103,19 @@ class ScheduleServiceTest {
         assertEquals(ScheduleStatus.OUTDATED, partialSchedule.getStatus());
         assertEquals(2, notifications[0]);
     }
+
+    @Test
+    void updatingPreferencesMarksCurrentScheduleOutdated() {
+        Schedule schedule = scheduleService.generateSchedule(date, date);
+        UserPreferences updated = new UserPreferences(
+                30, StudyPeriod.EVENING, 5);
+
+        scheduleService.updatePreferences(updated);
+
+        UserPreferences saved = scheduleService.getPreferences();
+        assertEquals(30, saved.getMaxSessionLength());
+        assertEquals(StudyPeriod.EVENING, saved.getPreferredStudyPeriod());
+        assertEquals(5, saved.getBreakLength());
+        assertEquals(ScheduleStatus.OUTDATED, schedule.getStatus());
+    }
 }

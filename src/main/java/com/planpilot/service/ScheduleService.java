@@ -86,6 +86,27 @@ public class ScheduleService {
         };
     }
 
+    public UserPreferences getPreferences() {
+        return new UserPreferences(
+                preferences.getMaxSessionLength(),
+                preferences.getPreferredStudyPeriod(),
+                preferences.getBreakLength());
+    }
+
+    public void updatePreferences(UserPreferences updatedPreferences) {
+        Objects.requireNonNull(
+                updatedPreferences, "User preferences cannot be null.");
+        preferences.setMaxSessionLength(
+                updatedPreferences.getMaxSessionLength());
+        preferences.setPreferredStudyPeriod(
+                updatedPreferences.getPreferredStudyPeriod());
+        preferences.setBreakLength(updatedPreferences.getBreakLength());
+        if (currentSchedule != null) {
+            currentSchedule.markOutdated();
+        }
+        eventPublisher.notifyObservers();
+    }
+
     public void markScheduleOutdated() {
         requireCurrentSchedule();
         currentSchedule.markOutdated();

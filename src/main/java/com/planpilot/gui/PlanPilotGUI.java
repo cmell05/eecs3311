@@ -8,11 +8,13 @@ import com.planpilot.domain.AvailabilityType;
 import com.planpilot.domain.Course;
 import com.planpilot.domain.GeneralTask;
 import com.planpilot.domain.PriorityLevel;
+import com.planpilot.domain.ProgressRecord;
 import com.planpilot.domain.ProgressStatus;
 import com.planpilot.domain.Schedule;
 import com.planpilot.domain.StudyPeriod;
 import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.Task;
+import com.planpilot.domain.TaskStatus;
 import com.planpilot.domain.UserPreferences;
 import com.planpilot.event.PlanningEventPublisher;
 import com.planpilot.event.PlanningObserver;
@@ -20,6 +22,7 @@ import com.planpilot.service.AvailabilityService;
 import com.planpilot.service.ConflictDetector;
 import com.planpilot.service.CourseService;
 import com.planpilot.service.ProgressService;
+import com.planpilot.service.ReplanOption;
 import com.planpilot.service.SchedulePlanner;
 import com.planpilot.service.ScheduleService;
 import com.planpilot.service.ScheduleInfeasibleException;
@@ -51,6 +54,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
+import java.util.function.Supplier;
 
 public class PlanPilotGUI extends Application implements PlanningObserver {
     private PlanPilotController controller;
@@ -148,8 +152,9 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     }
 
     private Node createCoursesPage() {
+        List<Course> courses = controller.getCourses();
         ListView<String> courseList = new ListView<>(FXCollections.observableArrayList(
-                controller.getCourses().stream()
+                courses.stream()
                         .map(course -> course.getId() + " | " + course.getCode()
                                 + " | " + course.getName())
                         .toList()));
@@ -169,14 +174,47 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         required(codeField, "Course code"),
                         required(nameField, "Course name")))));
 
+        Button updateButton = new Button("Update");
+        Button deleteButton = new Button("Delete");
+        Button clearButton = new Button("New/Clear");
+        updateButton.setDisable(true);
+        deleteButton.setDisable(true);
+        courseList.getSelectionModel().selectedIndexProperty().addListener(
+                (observable, oldIndex, newIndex) -> {
+                    int index = newIndex.intValue();
+                    if (index < 0 || index >= courses.size()) {
+                        return;
+                    }
+                    Course selected = courses.get(index);
+                    idField.setText(selected.getId());
+                    idField.setDisable(true);
+                    codeField.setText(selected.getCode());
+                    nameField.setText(selected.getName());
+                    updateButton.setDisable(false);
+                    deleteButton.setDisable(false);
+                });
+        updateButton.setOnAction(event -> executeAction("Course updated", () -> {
+            Course selected = selectedItem(courseList, courses, "course");
+            selected.setCode(required(codeField, "Course code"));
+            selected.rename(required(nameField, "Course name"));
+            controller.updateCourse(selected);
+        }));
+        deleteButton.setOnAction(event -> executeAction("Course deleted", () ->
+                controller.deleteCourse(
+                        selectedItem(courseList, courses, "course").getId())));
+        clearButton.setOnAction(event -> showPage(Page.COURSES));
+
         return createManagementPage(
                 "Courses", "Add and review academic courses.", courseList,
-                createEditor("Add Course", form, addButton));
+                createEditor(
+                        "Add or Edit Course", form,
+                        addButton, updateButton, deleteButton, clearButton));
     }
 
     private Node createTasksPage() {
+        List<Task> tasks = controller.getOpenTasks();
         ListView<String> taskList = new ListView<>(FXCollections.observableArrayList(
-                controller.getOpenTasks().stream().map(this::formatTask).toList()));
+                tasks.stream().map(this::formatTask).toList()));
         taskList.setPlaceholder(new Label("No open tasks."));
 
         ComboBox<String> kindField = new ComboBox<>(
@@ -222,14 +260,12 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         addFormRow(form, 9, "Assessment weight", weightField);
         addFormRow(form, 10, "Academic type", academicTypeField);
 
-        Button addButton = new Button("Add Task");
-        addButton.setOnAction(event -> executeAction("Task added", () -> {
+        Supplier<Task> taskFromForm = () -> {
             LocalDateTime deadline = combineDateAndTime(
                     deadlineDate, deadlineTime, "Deadline");
             double effort = positiveDouble(effortField, "Estimated hours");
-            Task task;
             if ("Academic".equals(kindField.getValue())) {
-                task = new AcademicTask(
+                return new AcademicTask(
                         required(idField, "Task ID"),
                         required(titleField, "Task title"),
                         deadline,
@@ -239,21 +275,73 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         findCourse(courseField.getValue()),
                         nonNegativeDouble(weightField, "Assessment weight"),
                         requiredValue(academicTypeField.getValue(), "Academic type"));
-            } else {
-                task = new GeneralTask(
-                        required(idField, "Task ID"),
-                        required(titleField, "Task title"),
-                        deadline,
-                        effort,
-                        requiredValue(difficultyField.getValue(), "Difficulty"),
-                        requiredValue(importanceField.getValue(), "Importance"));
             }
-            controller.addTask(task);
+            return new GeneralTask(
+                    required(idField, "Task ID"),
+                    required(titleField, "Task title"),
+                    deadline,
+                    effort,
+                    requiredValue(difficultyField.getValue(), "Difficulty"),
+                    requiredValue(importanceField.getValue(), "Importance"));
+        };
+
+        Button addButton = new Button("Add Task");
+        Button updateButton = new Button("Update");
+        Button deleteButton = new Button("Delete");
+        Button clearButton = new Button("New/Clear");
+        updateButton.setDisable(true);
+        deleteButton.setDisable(true);
+        addButton.setOnAction(event -> executeAction(
+                "Task added", () -> controller.addTask(taskFromForm.get())));
+        taskList.getSelectionModel().selectedIndexProperty().addListener(
+                (observable, oldIndex, newIndex) -> {
+                    int index = newIndex.intValue();
+                    if (index < 0 || index >= tasks.size()) {
+                        return;
+                    }
+                    Task selected = tasks.get(index);
+                    idField.setText(selected.getId());
+                    idField.setDisable(true);
+                    titleField.setText(selected.getTitle());
+                    deadlineDate.setValue(selected.getDeadline().toLocalDate());
+                    deadlineTime.setText(selected.getDeadline().toLocalTime().toString());
+                    effortField.setText(Double.toString(selected.getEstimatedHours()));
+                    difficultyField.setValue(selected.getDifficulty());
+                    importanceField.setValue(selected.getUserImportance());
+                    if (selected instanceof AcademicTask academicTask) {
+                        kindField.setValue("Academic");
+                        courseField.setValue(academicTask.getCourse().getId());
+                        weightField.setText(Double.toString(
+                                academicTask.getAssessmentWeight()));
+                        academicTypeField.setValue(academicTask.getTaskType());
+                    } else {
+                        kindField.setValue("General");
+                        courseField.setValue(null);
+                        weightField.clear();
+                    }
+                    updateAcademicFields.run();
+                    updateButton.setDisable(false);
+                    deleteButton.setDisable(false);
+                });
+        updateButton.setOnAction(event -> executeAction("Task updated", () -> {
+            Task selected = selectedItem(taskList, tasks, "task");
+            Task updated = taskFromForm.get();
+            updated.setCompletedHours(selected.getCompletedHours());
+            if (selected.getStatus() == TaskStatus.SKIPPED) {
+                updated.markSkipped();
+            }
+            controller.updateTask(updated);
         }));
+        deleteButton.setOnAction(event -> executeAction("Task deleted", () ->
+                controller.deleteTask(
+                        selectedItem(taskList, tasks, "task").getId())));
+        clearButton.setOnAction(event -> showPage(Page.TASKS));
 
         return createManagementPage(
                 "Tasks", "Add academic or general tasks and review open work.",
-                taskList, createEditor("Add Task", form, addButton));
+                taskList, createEditor(
+                        "Add or Edit Task", form,
+                        addButton, updateButton, deleteButton, clearButton));
     }
 
     private Node createAvailabilityPage() {
@@ -291,10 +379,54 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                     requiredValue(typeField.getValue(), "Availability type")));
         }));
 
+        Button updateButton = new Button("Update");
+        Button deleteButton = new Button("Delete");
+        Button clearButton = new Button("New/Clear");
+        updateButton.setDisable(true);
+        deleteButton.setDisable(true);
+        availabilityList.getSelectionModel().selectedIndexProperty().addListener(
+                (observable, oldIndex, newIndex) -> {
+                    int index = newIndex.intValue();
+                    if (index < 0 || index >= entries.size()) {
+                        return;
+                    }
+                    AvailabilityBlock selected = entries.get(index);
+                    idField.setText(selected.getId());
+                    idField.setDisable(true);
+                    dateField.setValue(selected.getStart().toLocalDate());
+                    startTimeField.setText(selected.getStart().toLocalTime().toString());
+                    endTimeField.setText(selected.getEnd().toLocalTime().toString());
+                    typeField.setValue(selected.getType());
+                    updateButton.setDisable(false);
+                    deleteButton.setDisable(false);
+                });
+        updateButton.setOnAction(event -> executeAction(
+                "Availability updated", () -> {
+                    AvailabilityBlock selected = selectedItem(
+                            availabilityList, entries, "availability entry");
+                    LocalDate date = requiredValue(dateField.getValue(), "Date");
+                    controller.updateAvailability(new AvailabilityBlock(
+                            selected.getId(),
+                            LocalDateTime.of(
+                                    date, parseTime(startTimeField, "Start time")),
+                            LocalDateTime.of(
+                                    date, parseTime(endTimeField, "End time")),
+                            requiredValue(
+                                    typeField.getValue(), "Availability type")));
+                }));
+        deleteButton.setOnAction(event -> executeAction(
+                "Availability deleted", () -> controller.deleteAvailability(
+                        selectedItem(
+                                availabilityList, entries,
+                                "availability entry").getId())));
+        clearButton.setOnAction(event -> showPage(Page.AVAILABILITY));
+
         return createManagementPage(
                 "Availability", "Add free study time or fixed commitments.",
                 availabilityList,
-                createEditor("Add Availability or Commitment", form, addButton));
+                createEditor(
+                        "Add or Edit Availability", form,
+                        addButton, updateButton, deleteButton, clearButton));
     }
 
     private Node createSchedulePage() {
@@ -307,6 +439,16 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 10, new Label("Start:"), startField,
                 new Label("End:"), endField, generateButton);
         controls.setAlignment(Pos.CENTER_LEFT);
+
+        ComboBox<ReplanOption> replanField = new ComboBox<>(
+                FXCollections.observableArrayList(ReplanOption.values()));
+        replanField.setValue(ReplanOption.RESCHEDULE_INCOMPLETE_WORK);
+        Button replanButton = new Button("Apply Replan Option");
+        replanButton.setDisable(displayedSchedule == null);
+        replanButton.setOnAction(event -> replanSchedule(replanField.getValue()));
+        HBox replanControls = new HBox(
+                10, new Label("Replan:"), replanField, replanButton);
+        replanControls.setAlignment(Pos.CENTER_LEFT);
 
         ListView<String> blockList = new ListView<>(FXCollections.observableArrayList(
                 scheduleBlocks().stream().map(this::formatStudyBlock).toList()));
@@ -322,8 +464,36 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         warning.setVisible(!warning.getText().isBlank());
         warning.setManaged(warning.isVisible());
 
-        VBox content = new VBox(12, controls, summary, warning, blockList);
-        VBox.setVgrow(blockList, Priority.ALWAYS);
+        UserPreferences preferences = controller.getUserPreferences();
+        TextField maxSessionField = new TextField(
+                Integer.toString(preferences.getMaxSessionLength()));
+        TextField breakField = new TextField(
+                Integer.toString(preferences.getBreakLength()));
+        ComboBox<StudyPeriod> periodField = new ComboBox<>(
+                FXCollections.observableArrayList(StudyPeriod.values()));
+        periodField.setValue(preferences.getPreferredStudyPeriod());
+        GridPane preferenceForm = createFormGrid();
+        addFormRow(preferenceForm, 0, "Max session (minutes)", maxSessionField);
+        addFormRow(preferenceForm, 1, "Break (minutes)", breakField);
+        addFormRow(preferenceForm, 2, "Preferred period", periodField);
+        Button savePreferencesButton = new Button("Save Preferences");
+        savePreferencesButton.setOnAction(event -> executeAction(
+                "Preferences saved; replan when ready", () ->
+                        controller.updateUserPreferences(new UserPreferences(
+                                positiveInt(
+                                        maxSessionField, "Maximum session length"),
+                                requiredValue(
+                                        periodField.getValue(), "Preferred period"),
+                                nonNegativeInt(breakField, "Break length")))));
+        VBox preferenceEditor = createEditor(
+                "Scheduling Preferences", preferenceForm, savePreferencesButton);
+        preferenceEditor.setPrefWidth(300);
+
+        HBox scheduleContent = new HBox(20, blockList, preferenceEditor);
+        HBox.setHgrow(blockList, Priority.ALWAYS);
+        VBox content = new VBox(
+                12, controls, replanControls, summary, warning, scheduleContent);
+        VBox.setVgrow(scheduleContent, Priority.ALWAYS);
         return createPage(
                 "Schedule", "Generate a deterministic schedule for a planning window.",
                 content);
@@ -360,12 +530,58 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         }
     }
 
+    private void replanSchedule(ReplanOption option) {
+        try {
+            scheduleGenerationInProgress = true;
+            displayedSchedule = controller.requestReplan(
+                    requiredValue(option, "Replan option"));
+            planningStart = displayedSchedule.getStartDate();
+            planningEnd = displayedSchedule.getEndDate();
+            scheduleWarning = "";
+            scheduleMayBeOutdated = false;
+            showPage(Page.SCHEDULE);
+            statusLabel.setText("Replan option applied");
+        } catch (ScheduleInfeasibleException exception) {
+            displayedSchedule = exception.getPartialSchedule();
+            planningStart = displayedSchedule.getStartDate();
+            planningEnd = displayedSchedule.getEndDate();
+            scheduleWarning = String.format(
+                    "The replanned workload does not fit. %.2f hours remain "
+                            + "unscheduled; the feasible partial schedule is shown.",
+                    exception.getWorkloadDeficitHours());
+            scheduleMayBeOutdated = false;
+            showPage(Page.SCHEDULE);
+            statusLabel.setText("Replanned schedule is infeasible");
+        } catch (RuntimeException exception) {
+            showError(errorMessage(exception));
+        } finally {
+            scheduleGenerationInProgress = false;
+        }
+    }
+
     private Node createProgressPage() {
         List<StudyBlock> blocks = scheduleBlocks();
         ListView<String> blockList = new ListView<>(FXCollections.observableArrayList(
                 blocks.stream().map(this::formatProgressBlock).toList()));
         blockList.setPlaceholder(new Label(
                 "Generate a schedule before recording progress."));
+        ListView<String> historyList = new ListView<>();
+        historyList.setPlaceholder(new Label(
+                "Select a study block to view its task history."));
+        Runnable refreshHistory = () -> {
+            int index = blockList.getSelectionModel().getSelectedIndex();
+            if (index < 0 || index >= blocks.size()) {
+                historyList.getItems().clear();
+                return;
+            }
+            historyList.setItems(FXCollections.observableArrayList(
+                    controller.getProgressHistory(blocks.get(index).getTask())
+                            .stream()
+                            .map(this::formatProgressRecord)
+                            .toList()));
+        };
+        blockList.getSelectionModel().selectedIndexProperty().addListener(
+                (observable, oldIndex, newIndex) -> refreshHistory.run());
 
         Label selectionHelp = new Label(
                 "Select a study block, then record its result.");
@@ -427,10 +643,17 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         partialButton.setDisable(noBlocks);
         skippedButton.setDisable(noBlocks);
 
-        HBox main = new HBox(20, blockList, editor);
+        VBox historyPanel = new VBox(
+                8, new Label("Progress History for Selected Task"), historyList);
+        historyPanel.setPrefWidth(340);
+        VBox.setVgrow(historyList, Priority.ALWAYS);
+        HBox main = new HBox(20, blockList, editor, historyPanel);
         HBox.setHgrow(blockList, Priority.ALWAYS);
         VBox content = new VBox(12, warning, main);
         VBox.setVgrow(main, Priority.ALWAYS);
+        if (!blocks.isEmpty()) {
+            blockList.getSelectionModel().selectFirst();
+        }
         return createPage(
                 "Progress", "Record outcomes for scheduled study blocks.", content);
     }
@@ -496,6 +719,13 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         task.getEstimatedHours(), task.getStatus());
     }
 
+    private String formatProgressRecord(ProgressRecord record) {
+        return record.getRecordedAt() + " | " + record.getStatus()
+                + " | " + String.format(
+                        "%.2fh", record.getCompletedHours())
+                + " | block " + record.getStudyBlock().getId();
+    }
+
     private Node createManagementPage(
             String title, String description, Node list, Node editor) {
         HBox content = new HBox(20, list, editor);
@@ -506,10 +736,11 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         return createPage(title, description, content);
     }
 
-    private VBox createEditor(String title, Node form, Button action) {
+    private VBox createEditor(String title, Node form, Node... actions) {
         Label heading = new Label(title);
         heading.setStyle("-fx-font-size: 16px; -fx-font-weight: bold;");
-        VBox editor = new VBox(12, heading, new Separator(), form, action);
+        HBox actionBar = new HBox(8, actions);
+        VBox editor = new VBox(12, heading, new Separator(), form, actionBar);
         editor.setPrefWidth(380);
         return editor;
     }
@@ -616,6 +847,31 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         return value;
     }
 
+    private int positiveInt(TextField field, String fieldName) {
+        int value = parseInt(field, fieldName);
+        if (value <= 0) {
+            throw new IllegalArgumentException(fieldName + " must be positive.");
+        }
+        return value;
+    }
+
+    private int nonNegativeInt(TextField field, String fieldName) {
+        int value = parseInt(field, fieldName);
+        if (value < 0) {
+            throw new IllegalArgumentException(fieldName + " cannot be negative.");
+        }
+        return value;
+    }
+
+    private int parseInt(TextField field, String fieldName) {
+        try {
+            return Integer.parseInt(required(field, fieldName));
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException(
+                    fieldName + " must be a whole number.");
+        }
+    }
+
     private double parseDouble(TextField field, String fieldName) {
         try {
             double value = Double.parseDouble(required(field, fieldName));
@@ -641,6 +897,16 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             throw new IllegalArgumentException(fieldName + " is required.");
         }
         return value;
+    }
+
+    private <T> T selectedItem(
+            ListView<String> listView, List<T> items, String itemName) {
+        int index = listView.getSelectionModel().getSelectedIndex();
+        if (index < 0 || index >= items.size()) {
+            throw new IllegalArgumentException(
+                    "Select a " + itemName + " first.");
+        }
+        return items.get(index);
     }
 
     private ApplicationContext createApplicationContext() {
