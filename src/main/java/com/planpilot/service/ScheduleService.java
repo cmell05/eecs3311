@@ -59,8 +59,14 @@ public class ScheduleService {
         LocalDateTime windowEnd = end.plusDays(1).atStartOfDay();
         List<AvailabilityBlock> availability = availabilityService.getAvailability(
                 windowStart, windowEnd);
-        currentSchedule = schedulePlanner.createSchedule(
-                taskService.getOpenTasks(), availability, preferences, start, end);
+        try {
+            currentSchedule = schedulePlanner.createSchedule(
+                    taskService.getOpenTasks(), availability, preferences, start, end);
+        } catch (ScheduleInfeasibleException exception) {
+            currentSchedule = exception.getPartialSchedule();
+            eventPublisher.notifyObservers();
+            throw exception;
+        }
         eventPublisher.notifyObservers();
         return currentSchedule;
     }
