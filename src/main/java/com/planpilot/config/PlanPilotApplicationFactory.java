@@ -1,5 +1,7 @@
 package com.planpilot.config;
 
+import com.planpilot.ai.GeminiLLMClient;
+import com.planpilot.ai.PlanningAgent;
 import com.planpilot.controller.PlanPilotController;
 import com.planpilot.domain.StudyPeriod;
 import com.planpilot.domain.UserPreferences;
@@ -7,6 +9,7 @@ import com.planpilot.event.PlanningEventPublisher;
 import com.planpilot.service.AvailabilityService;
 import com.planpilot.service.ConflictDetector;
 import com.planpilot.service.CourseService;
+import com.planpilot.service.EffortEstimator;
 import com.planpilot.service.ProgressService;
 import com.planpilot.service.SchedulePlanner;
 import com.planpilot.service.ScheduleService;
@@ -35,9 +38,20 @@ public final class PlanPilotApplicationFactory {
                         StudyPeriod.ANY,
                         DEFAULT_BREAK_MINUTES),
                 publisher);
+        EffortEstimator effortEstimator = createEffortEstimator();
         PlanPilotController controller = new PlanPilotController(
                 courseService, taskService, availabilityService,
-                scheduleService, progressService);
+                scheduleService, progressService, effortEstimator);
         return new PlanPilotApplicationContext(controller, publisher);
+    }
+
+    private static EffortEstimator createEffortEstimator() {
+        try {
+            GeminiLLMClient client = new GeminiLLMClient(
+                    GeminiConfiguration.load());
+            return new EffortEstimator(new PlanningAgent(client));
+        } catch (IllegalStateException exception) {
+            return null;
+        }
     }
 }

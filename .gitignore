@@ -3,5 +3,7 @@ target/
 .vscode/
 *.iml
 .env
+.env.*
+!.env.example
 application-secrets.properties
 .DS_Store

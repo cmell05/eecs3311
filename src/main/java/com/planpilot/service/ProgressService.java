@@ -84,6 +84,10 @@ public class ProgressService {
                 .toList();
     }
 
+    public List<ProgressRecord> getHistory() {
+        return List.copyOf(history);
+    }
+
     private void validateProgress(
             StudyBlock block, ProgressStatus status, double hours) {
         if (!Double.isFinite(hours) || hours < 0) {

@@ -10,6 +10,7 @@ import com.planpilot.domain.Task;
 import com.planpilot.domain.UserPreferences;
 import com.planpilot.service.AvailabilityService;
 import com.planpilot.service.CourseService;
+import com.planpilot.service.EffortEstimator;
 import com.planpilot.service.ProgressService;
 import com.planpilot.service.ReplanOption;
 import com.planpilot.service.ScheduleService;
@@ -26,6 +27,7 @@ public class PlanPilotController {
     private final AvailabilityService availabilityService;
     private final ScheduleService scheduleService;
     private final ProgressService progressService;
+    private final EffortEstimator effortEstimator;
 
     public PlanPilotController(
             CourseService courseService,
@@ -33,6 +35,17 @@ public class PlanPilotController {
             AvailabilityService availabilityService,
             ScheduleService scheduleService,
             ProgressService progressService) {
+        this(courseService, taskService, availabilityService, scheduleService,
+                progressService, null);
+    }
+
+    public PlanPilotController(
+            CourseService courseService,
+            TaskService taskService,
+            AvailabilityService availabilityService,
+            ScheduleService scheduleService,
+            ProgressService progressService,
+            EffortEstimator effortEstimator) {
         this.courseService = Objects.requireNonNull(
                 courseService, "Course service cannot be null.");
         this.taskService = Objects.requireNonNull(
@@ -43,6 +56,7 @@ public class PlanPilotController {
                 scheduleService, "Schedule service cannot be null.");
         this.progressService = Objects.requireNonNull(
                 progressService, "Progress service cannot be null.");
+        this.effortEstimator = effortEstimator;
     }
 
     public Course addCourse(Course courseData) {
@@ -147,8 +161,12 @@ public class PlanPilotController {
 
     public double requestEffortSuggestion(Task task) {
         Objects.requireNonNull(task, "Task cannot be null.");
-        throw new UnsupportedOperationException(
-                "Effort estimation is not available until EffortEstimator is implemented.");
+        if (effortEstimator == null) {
+            throw new UnsupportedOperationException(
+                    "Effort estimation is not configured.");
+        }
+        return effortEstimator.estimateEffort(
+                task, progressService.getHistory());
     }
 
     public Task parseNaturalLanguageTask(String text) {

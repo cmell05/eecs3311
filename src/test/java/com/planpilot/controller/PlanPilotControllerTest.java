@@ -1,5 +1,6 @@
 package com.planpilot.controller;
 
+import com.planpilot.ai.PlanningAgent;
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.AvailabilityType;
 import com.planpilot.domain.AcademicTask;
@@ -17,6 +18,7 @@ import com.planpilot.domain.UserPreferences;
 import com.planpilot.service.AvailabilityService;
 import com.planpilot.service.ConflictDetector;
 import com.planpilot.service.CourseService;
+import com.planpilot.service.EffortEstimator;
 import com.planpilot.service.ProgressService;
 import com.planpilot.service.ReplanOption;
 import com.planpilot.service.SchedulePlanner;
@@ -217,6 +219,31 @@ class PlanPilotControllerTest {
                 () -> controller.parseNaturalLanguageTask("Assignment due tomorrow"));
         assertThrows(UnsupportedOperationException.class,
                 () -> controller.explainSchedule("Why is this task first?"));
+    }
+
+    @Test
+    void delegatesEffortSuggestionWithoutChangingTask() {
+        CourseService courseService = new CourseService();
+        TaskService taskService = new TaskService(courseService);
+        AvailabilityService availabilityService = new AvailabilityService();
+        ProgressService progressService = new ProgressService();
+        SchedulePlanner schedulePlanner = new SchedulePlanner(
+                task -> 1.0, new ConflictDetector());
+        ScheduleService scheduleService = new ScheduleService(
+                taskService, availabilityService, schedulePlanner,
+                new UserPreferences(60, StudyPeriod.ANY, 0));
+        EffortEstimator estimator = new EffortEstimator(new PlanningAgent(
+                (systemInstruction, userPrompt) ->
+                        "{\"estimatedHours\":3.5}"));
+        PlanPilotController aiController = new PlanPilotController(
+                courseService, taskService, availabilityService,
+                scheduleService, progressService, estimator);
+        Task task = task("T1", 2);
+
+        double suggestion = aiController.requestEffortSuggestion(task);
+
+        assertEquals(3.5, suggestion, 0.0001);
+        assertEquals(2, task.getEstimatedHours(), 0.0001);
     }
 
     private Task task(String id, double hours) {
