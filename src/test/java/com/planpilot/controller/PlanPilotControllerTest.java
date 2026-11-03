@@ -7,6 +7,7 @@ import com.planpilot.domain.GeneralTask;
 import com.planpilot.domain.PriorityLevel;
 import com.planpilot.domain.ProgressStatus;
 import com.planpilot.domain.Schedule;
+import com.planpilot.domain.ScheduleStatus;
 import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.StudyPeriod;
 import com.planpilot.domain.Task;
@@ -148,6 +149,37 @@ class PlanPilotControllerTest {
         assertEquals(45, saved.getMaxSessionLength());
         assertEquals(StudyPeriod.EVENING, saved.getPreferredStudyPeriod());
         assertEquals(10, saved.getBreakLength());
+    }
+
+    @Test
+    void taskAndAvailabilityMutationsMarkCurrentScheduleOutdated() {
+        controller.addTask(task("T1", 1));
+        controller.addAvailability(new AvailabilityBlock(
+                "A1", start, start.plusHours(2), AvailabilityType.AVAILABLE));
+        Schedule firstSchedule = controller.generateSchedule(date, date);
+
+        controller.addTask(task("T2", 1));
+
+        assertEquals(ScheduleStatus.OUTDATED, firstSchedule.getStatus());
+
+        Schedule secondSchedule = controller.generateSchedule(date, date);
+        controller.updateAvailability(new AvailabilityBlock(
+                "A1", start, start.plusHours(3), AvailabilityType.AVAILABLE));
+
+        assertEquals(ScheduleStatus.OUTDATED, secondSchedule.getStatus());
+    }
+
+    @Test
+    void progressMutationMarksCurrentScheduleOutdated() {
+        controller.addTask(task("T1", 2));
+        controller.addAvailability(new AvailabilityBlock(
+                "A1", start, start.plusHours(2), AvailabilityType.AVAILABLE));
+        Schedule schedule = controller.generateSchedule(date, date);
+        StudyBlock block = schedule.getStudyBlocks().get(0);
+
+        controller.updateProgress(block, ProgressStatus.PARTIAL, 0.5);
+
+        assertEquals(ScheduleStatus.OUTDATED, schedule.getStatus());
     }
 
     @Test

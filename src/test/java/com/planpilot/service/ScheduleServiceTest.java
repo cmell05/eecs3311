@@ -4,8 +4,10 @@ import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.AvailabilityType;
 import com.planpilot.domain.GeneralTask;
 import com.planpilot.domain.PriorityLevel;
+import com.planpilot.domain.ProgressStatus;
 import com.planpilot.domain.Schedule;
 import com.planpilot.domain.ScheduleStatus;
+import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.StudyPeriod;
 import com.planpilot.domain.UserPreferences;
 import com.planpilot.event.PlanningEventPublisher;
@@ -117,5 +119,49 @@ class ScheduleServiceTest {
         assertEquals(StudyPeriod.EVENING, saved.getPreferredStudyPeriod());
         assertEquals(5, saved.getBreakLength());
         assertEquals(ScheduleStatus.OUTDATED, schedule.getStatus());
+    }
+
+    @Test
+    void rescheduleIncompleteWorkPreservesCompletedBlocks() {
+        LocalDateTime start = date.atTime(9, 0);
+        CourseService courseService = new CourseService();
+        TaskService taskService = new TaskService(courseService);
+        GeneralTask task = new GeneralTask(
+                "T2", "Two-part task", start.plusDays(1),
+                2, 2, PriorityLevel.MEDIUM);
+        taskService.createTask(task);
+        AvailabilityService availabilityService = new AvailabilityService();
+        availabilityService.addAvailability(new AvailabilityBlock(
+                "A2", start, start.plusHours(3), AvailabilityType.AVAILABLE));
+        ScheduleService service = new ScheduleService(
+                taskService, availabilityService,
+                new SchedulePlanner(candidate -> 1.0, new ConflictDetector()),
+                new UserPreferences(60, StudyPeriod.ANY, 0));
+        Schedule original = service.generateSchedule(date, date);
+        StudyBlock completed = original.getStudyBlocks().get(0);
+        completed.markCompleted();
+        task.setCompletedHours(completed.durationHours());
+
+        Schedule replanned = service.replan(
+                ReplanOption.RESCHEDULE_INCOMPLETE_WORK);
+
+        assertEquals(2, replanned.getStudyBlocks().size());
+        assertEquals(1, replanned.getStudyBlocks().stream()
+                .filter(block -> block.getProgressStatus() == ProgressStatus.COMPLETED)
+                .count());
+        assertEquals(1, replanned.getStudyBlocks().stream()
+                .filter(block -> block.getProgressStatus() == ProgressStatus.PLANNED)
+                .count());
+        assertEquals(start.plusHours(1), replanned.getStudyBlocks().get(1).getStart());
+
+        Schedule entireWindow = service.replan(ReplanOption.REPLAN_ENTIRE_WINDOW);
+        assertEquals(1, entireWindow.getStudyBlocks().size());
+        assertEquals(ProgressStatus.PLANNED,
+                entireWindow.getStudyBlocks().get(0).getProgressStatus());
+    }
+
+    @Test
+    void optionalOutdatedMarkIsSafeWithoutCurrentSchedule() {
+        scheduleService.markScheduleOutdatedIfPresent();
     }
 }

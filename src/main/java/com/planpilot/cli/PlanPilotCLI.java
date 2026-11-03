@@ -249,7 +249,6 @@ public class PlanPilotCLI {
         }
 
         controller.updateProgress(block, status, hours);
-        controller.markScheduleOutdated();
         output.println("Progress recorded. The schedule is now outdated; replan when ready.");
     }
 

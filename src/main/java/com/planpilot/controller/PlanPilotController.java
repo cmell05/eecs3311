@@ -62,15 +62,19 @@ public class PlanPilotController {
     }
 
     public Task addTask(Task taskData) {
-        return taskService.createTask(taskData);
+        Task created = taskService.createTask(taskData);
+        scheduleService.markScheduleOutdatedIfPresent();
+        return created;
     }
 
     public void updateTask(Task task) {
         taskService.updateTask(task);
+        scheduleService.markScheduleOutdatedIfPresent();
     }
 
     public void deleteTask(String taskId) {
         taskService.deleteTask(taskId);
+        scheduleService.markScheduleOutdatedIfPresent();
     }
 
     public List<Task> getOpenTasks() {
@@ -79,14 +83,17 @@ public class PlanPilotController {
 
     public void addAvailability(AvailabilityBlock block) {
         availabilityService.addAvailability(block);
+        scheduleService.markScheduleOutdatedIfPresent();
     }
 
     public void updateAvailability(AvailabilityBlock block) {
         availabilityService.updateAvailability(block);
+        scheduleService.markScheduleOutdatedIfPresent();
     }
 
     public void deleteAvailability(String blockId) {
         availabilityService.deleteAvailability(blockId);
+        scheduleService.markScheduleOutdatedIfPresent();
     }
 
     public List<AvailabilityBlock> getAvailability(
@@ -101,10 +108,12 @@ public class PlanPilotController {
     public void updateProgress(
             StudyBlock block, ProgressStatus status, double hours) {
         progressService.recordProgress(block, status, hours);
+        scheduleService.markScheduleOutdatedIfPresent();
     }
 
     public void inferProgress(StudyBlock block) {
         progressService.inferProgress(block);
+        scheduleService.markScheduleOutdatedIfPresent();
     }
 
     public List<ProgressRecord> getProgressHistory(Task task) {
