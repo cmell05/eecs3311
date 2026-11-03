@@ -1,0 +1,43 @@
+package com.planpilot.config;
+
+import com.planpilot.controller.PlanPilotController;
+import com.planpilot.domain.StudyPeriod;
+import com.planpilot.domain.UserPreferences;
+import com.planpilot.event.PlanningEventPublisher;
+import com.planpilot.service.AvailabilityService;
+import com.planpilot.service.ConflictDetector;
+import com.planpilot.service.CourseService;
+import com.planpilot.service.ProgressService;
+import com.planpilot.service.SchedulePlanner;
+import com.planpilot.service.ScheduleService;
+import com.planpilot.service.TaskService;
+import com.planpilot.strategy.BalancedPriorityStrategy;
+
+public final class PlanPilotApplicationFactory {
+    private static final int DEFAULT_MAX_SESSION_MINUTES = 60;
+    private static final int DEFAULT_BREAK_MINUTES = 10;
+
+    private PlanPilotApplicationFactory() {
+    }
+
+    public static PlanPilotApplicationContext createDefault() {
+        PlanningEventPublisher publisher = new PlanningEventPublisher();
+        CourseService courseService = new CourseService();
+        TaskService taskService = new TaskService(courseService, publisher);
+        AvailabilityService availabilityService = new AvailabilityService();
+        ProgressService progressService = new ProgressService(publisher);
+        SchedulePlanner schedulePlanner = new SchedulePlanner(
+                new BalancedPriorityStrategy(), new ConflictDetector());
+        ScheduleService scheduleService = new ScheduleService(
+                taskService, availabilityService, schedulePlanner,
+                new UserPreferences(
+                        DEFAULT_MAX_SESSION_MINUTES,
+                        StudyPeriod.ANY,
+                        DEFAULT_BREAK_MINUTES),
+                publisher);
+        PlanPilotController controller = new PlanPilotController(
+                courseService, taskService, availabilityService,
+                scheduleService, progressService);
+        return new PlanPilotApplicationContext(controller, publisher);
+    }
+}

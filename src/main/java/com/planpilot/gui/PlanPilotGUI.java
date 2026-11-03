@@ -1,5 +1,7 @@
 package com.planpilot.gui;
 
+import com.planpilot.config.PlanPilotApplicationContext;
+import com.planpilot.config.PlanPilotApplicationFactory;
 import com.planpilot.controller.PlanPilotController;
 import com.planpilot.domain.AcademicTask;
 import com.planpilot.domain.AcademicTaskType;
@@ -18,16 +20,8 @@ import com.planpilot.domain.TaskStatus;
 import com.planpilot.domain.UserPreferences;
 import com.planpilot.event.PlanningEventPublisher;
 import com.planpilot.event.PlanningObserver;
-import com.planpilot.service.AvailabilityService;
-import com.planpilot.service.ConflictDetector;
-import com.planpilot.service.CourseService;
-import com.planpilot.service.ProgressService;
 import com.planpilot.service.ReplanOption;
-import com.planpilot.service.SchedulePlanner;
-import com.planpilot.service.ScheduleService;
 import com.planpilot.service.ScheduleInfeasibleException;
-import com.planpilot.service.TaskService;
-import com.planpilot.strategy.BalancedPriorityStrategy;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
@@ -75,9 +69,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
     @Override
     public void start(Stage stage) {
-        ApplicationContext context = createApplicationContext();
+        PlanPilotApplicationContext context =
+                PlanPilotApplicationFactory.createDefault();
         controller = context.controller();
-        eventPublisher = context.publisher();
+        eventPublisher = context.eventPublisher();
         eventPublisher.subscribe(this);
 
         root = new BorderPane();
@@ -909,24 +904,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         return items.get(index);
     }
 
-    private ApplicationContext createApplicationContext() {
-        PlanningEventPublisher publisher = new PlanningEventPublisher();
-        CourseService courseService = new CourseService();
-        TaskService taskService = new TaskService(courseService, publisher);
-        AvailabilityService availabilityService = new AvailabilityService();
-        ProgressService progressService = new ProgressService(publisher);
-        ConflictDetector conflictDetector = new ConflictDetector();
-        SchedulePlanner schedulePlanner = new SchedulePlanner(
-                new BalancedPriorityStrategy(), conflictDetector);
-        ScheduleService scheduleService = new ScheduleService(
-                taskService, availabilityService, schedulePlanner,
-                new UserPreferences(60, StudyPeriod.ANY, 10), publisher);
-        PlanPilotController planPilotController = new PlanPilotController(
-                courseService, taskService, availabilityService,
-                scheduleService, progressService);
-        return new ApplicationContext(planPilotController, publisher);
-    }
-
     private enum Page {
         COURSES("Courses"),
         TASKS("Tasks"),
@@ -939,9 +916,5 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         Page(String label) {
             this.label = label;
         }
-    }
-
-    private record ApplicationContext(
-            PlanPilotController controller, PlanningEventPublisher publisher) {
     }
 }

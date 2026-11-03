@@ -1,5 +1,6 @@
 package com.planpilot.cli;
 
+import com.planpilot.config.PlanPilotApplicationFactory;
 import com.planpilot.controller.PlanPilotController;
 import com.planpilot.domain.AcademicTask;
 import com.planpilot.domain.AcademicTaskType;
@@ -11,19 +12,8 @@ import com.planpilot.domain.PriorityLevel;
 import com.planpilot.domain.ProgressStatus;
 import com.planpilot.domain.Schedule;
 import com.planpilot.domain.StudyBlock;
-import com.planpilot.domain.StudyPeriod;
 import com.planpilot.domain.Task;
-import com.planpilot.domain.UserPreferences;
-import com.planpilot.event.PlanningEventPublisher;
-import com.planpilot.service.AvailabilityService;
-import com.planpilot.service.ConflictDetector;
-import com.planpilot.service.CourseService;
-import com.planpilot.service.ProgressService;
 import com.planpilot.service.ScheduleInfeasibleException;
-import com.planpilot.service.SchedulePlanner;
-import com.planpilot.service.ScheduleService;
-import com.planpilot.service.TaskService;
-import com.planpilot.strategy.BalancedPriorityStrategy;
 
 import java.io.PrintStream;
 import java.time.LocalDate;
@@ -70,20 +60,7 @@ public class PlanPilotCLI {
     }
 
     static PlanPilotController createDefaultController() {
-        PlanningEventPublisher publisher = new PlanningEventPublisher();
-        CourseService courseService = new CourseService();
-        TaskService taskService = new TaskService(courseService, publisher);
-        AvailabilityService availabilityService = new AvailabilityService();
-        ProgressService progressService = new ProgressService(publisher);
-        ConflictDetector conflictDetector = new ConflictDetector();
-        SchedulePlanner planner = new SchedulePlanner(
-                new BalancedPriorityStrategy(), conflictDetector);
-        ScheduleService scheduleService = new ScheduleService(
-                taskService, availabilityService, planner,
-                new UserPreferences(60, StudyPeriod.ANY, 10), publisher);
-        return new PlanPilotController(
-                courseService, taskService, availabilityService,
-                scheduleService, progressService);
+        return PlanPilotApplicationFactory.createDefault().controller();
     }
 
     private void printMenu() {
