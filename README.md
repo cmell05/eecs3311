@@ -71,6 +71,19 @@ AI menu actions use the same controller facade as deterministic actions. Parsed
 tasks, effort changes, recovery actions, and replanning remain subject to explicit
 user confirmation.
 
+## Run the GUI
+
+Launch the JavaFX application with:
+
+```sh
+mvn javafx:run
+```
+
+The **AI Assistant** page provides editable natural-language task proposals,
+effort suggestions, grounded schedule explanations, workload recovery advice,
+and user-approved replanning recommendations. Gemini requests run in the
+background so the JavaFX interface remains responsive.
+
 ## Build and Test
 
 Use JDK 17 and Maven, then run:

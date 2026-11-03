@@ -1,5 +1,9 @@
 package com.planpilot.gui;
 
+import com.planpilot.ai.ParsedTaskData;
+import com.planpilot.ai.ParsedTaskKind;
+import com.planpilot.ai.RecoveryPlan;
+import com.planpilot.ai.ReplanRecommendation;
 import com.planpilot.config.PlanPilotApplicationContext;
 import com.planpilot.config.PlanPilotApplicationFactory;
 import com.planpilot.controller.PlanPilotController;
@@ -35,7 +39,9 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.DatePicker;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
+import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.GridPane;
@@ -48,6 +54,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 public class PlanPilotGUI extends Application implements PlanningObserver {
@@ -62,6 +69,8 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private String scheduleWarning = "";
     private boolean scheduleMayBeOutdated;
     private boolean scheduleGenerationInProgress;
+    private ScheduleInfeasibleException lastInfeasibility;
+    private ReplanRecommendation pendingReplanRecommendation;
 
     public static void main(String[] args) {
         launch(args);
@@ -142,6 +151,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             case AVAILABILITY -> createAvailabilityPage();
             case SCHEDULE -> createSchedulePage();
             case PROGRESS -> createProgressPage();
+            case AI_ASSISTANT -> createAiAssistantPage();
         });
         statusLabel.setText(page.label);
     }
@@ -339,6 +349,227 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         addButton, updateButton, deleteButton, clearButton));
     }
 
+    private Node createAiAssistantPage() {
+        TextArea taskDescription = new TextArea();
+        taskDescription.setPromptText(
+                "Example: OS assignment due next Tuesday, worth 10%, about four hours");
+        taskDescription.setPrefRowCount(2);
+
+        TextField proposalId = new TextField();
+        TextField proposalTitle = new TextField();
+        DatePicker proposalDate = new DatePicker();
+        TextField proposalTime = new TextField("17:00");
+        TextField proposalEffort = new TextField();
+        ComboBox<Integer> proposalDifficulty = new ComboBox<>(
+                FXCollections.observableArrayList(1, 2, 3, 4, 5));
+        ComboBox<PriorityLevel> proposalImportance = new ComboBox<>(
+                FXCollections.observableArrayList(PriorityLevel.values()));
+        ComboBox<ParsedTaskKind> proposalKind = new ComboBox<>(
+                FXCollections.observableArrayList(ParsedTaskKind.values()));
+        ComboBox<String> proposalCourse = new ComboBox<>(
+                FXCollections.observableArrayList(
+                        controller.getCourses().stream()
+                                .map(Course::getId).toList()));
+        proposalCourse.setEditable(true);
+        TextField proposalWeight = new TextField();
+        ComboBox<AcademicTaskType> proposalType = new ComboBox<>(
+                FXCollections.observableArrayList(AcademicTaskType.values()));
+
+        Runnable updateProposalAcademicFields = () -> {
+            boolean academic = proposalKind.getValue()
+                    == ParsedTaskKind.ACADEMIC;
+            proposalCourse.setDisable(!academic);
+            proposalWeight.setDisable(!academic);
+            proposalType.setDisable(!academic);
+        };
+        proposalKind.setOnAction(
+                event -> updateProposalAcademicFields.run());
+        proposalKind.setValue(ParsedTaskKind.GENERAL);
+        proposalDifficulty.setValue(3);
+        proposalImportance.setValue(PriorityLevel.MEDIUM);
+        updateProposalAcademicFields.run();
+
+        GridPane proposalForm = createFormGrid();
+        addFormRow(proposalForm, 0, "Task ID", proposalId);
+        addFormRow(proposalForm, 1, "Title", proposalTitle);
+        addFormRow(proposalForm, 2, "Deadline date", proposalDate);
+        addFormRow(proposalForm, 3, "Deadline time", proposalTime);
+        addFormRow(proposalForm, 4, "Estimated hours", proposalEffort);
+        addFormRow(proposalForm, 5, "Difficulty", proposalDifficulty);
+        addFormRow(proposalForm, 6, "Importance", proposalImportance);
+        addFormRow(proposalForm, 7, "Task kind", proposalKind);
+        addFormRow(proposalForm, 8, "Course ID/code", proposalCourse);
+        addFormRow(proposalForm, 9, "Assessment weight", proposalWeight);
+        addFormRow(proposalForm, 10, "Academic type", proposalType);
+
+        Button saveProposalButton = new Button("Confirm and Add Task");
+        saveProposalButton.setDisable(true);
+        Button parseTaskButton = new Button("Parse Task with Gemini");
+        parseTaskButton.setOnAction(event -> {
+            String description = taskDescription.getText() == null
+                    ? "" : taskDescription.getText().trim();
+            if (description.isBlank()) {
+                showError("Task description is required.");
+                return;
+            }
+            runAiAction(
+                    parseTaskButton,
+                    "Parsing task with Gemini...",
+                    () -> controller.parseNaturalLanguageTask(description),
+                    proposal -> {
+                        populateProposal(
+                                proposal, proposalTitle, proposalDate,
+                                proposalTime, proposalEffort,
+                                proposalDifficulty, proposalImportance,
+                                proposalKind, proposalCourse,
+                                proposalWeight, proposalType);
+                        updateProposalAcademicFields.run();
+                        saveProposalButton.setDisable(false);
+                        statusLabel.setText(
+                                "AI proposal ready; review before saving");
+                    });
+        });
+        saveProposalButton.setOnAction(event -> executeAction(
+                "Confirmed task added", () -> controller.addTask(
+                        taskFromProposalForm(
+                                proposalId, proposalTitle, proposalDate,
+                                proposalTime, proposalEffort,
+                                proposalDifficulty, proposalImportance,
+                                proposalKind, proposalCourse,
+                                proposalWeight, proposalType))));
+        VBox taskParsingPanel = createEditor(
+                "Natural-Language Task Proposal",
+                new VBox(8, new Label("Task description:"),
+                        taskDescription, proposalForm),
+                parseTaskButton, saveProposalButton);
+        taskParsingPanel.setMaxWidth(Double.MAX_VALUE);
+
+        ComboBox<String> effortTask = new ComboBox<>(
+                FXCollections.observableArrayList(
+                        controller.getTasks().stream().map(Task::getId).toList()));
+        TextField suggestedEffort = new TextField();
+        suggestedEffort.setPromptText("Suggested hours appear here");
+        Button suggestEffortButton = new Button("Suggest Effort");
+        Button applyEffortButton = new Button("Apply Reviewed Estimate");
+        applyEffortButton.setDisable(true);
+        suggestEffortButton.setDisable(effortTask.getItems().isEmpty());
+        suggestEffortButton.setOnAction(event -> {
+            try {
+                Task selected = findTask(effortTask.getValue());
+                runAiAction(
+                        suggestEffortButton,
+                        "Requesting effort suggestion...",
+                        () -> controller.requestEffortSuggestion(selected),
+                        hours -> {
+                            suggestedEffort.setText(Double.toString(hours));
+                            applyEffortButton.setDisable(false);
+                            statusLabel.setText(
+                                    "Effort suggestion ready; edit or apply it");
+                        });
+            } catch (RuntimeException exception) {
+                showError(errorMessage(exception));
+            }
+        });
+        applyEffortButton.setOnAction(event -> executeAction(
+                "Task estimate updated by user confirmation", () -> {
+                    Task selected = findTask(effortTask.getValue());
+                    double hours = positiveDouble(
+                            suggestedEffort, "Reviewed estimate");
+                    selected.setEstimatedHours(hours);
+                    controller.updateTask(selected);
+                }));
+        GridPane effortForm = createFormGrid();
+        addFormRow(effortForm, 0, "Task ID", effortTask);
+        addFormRow(effortForm, 1, "Reviewed estimate", suggestedEffort);
+        VBox effortPanel = createEditor(
+                "Adaptive Effort Suggestion", effortForm,
+                suggestEffortButton, applyEffortButton);
+
+        TextArea scheduleQuestion = new TextArea();
+        scheduleQuestion.setPromptText(
+                "Ask why a task was prioritized or placed at a certain time");
+        scheduleQuestion.setPrefRowCount(2);
+        TextArea aiOutput = new TextArea();
+        aiOutput.setEditable(false);
+        aiOutput.setWrapText(true);
+        aiOutput.setPrefRowCount(7);
+        Button explainButton = new Button("Explain Schedule");
+        explainButton.setDisable(displayedSchedule == null);
+        explainButton.setOnAction(event -> {
+            String question = scheduleQuestion.getText() == null
+                    ? "" : scheduleQuestion.getText().trim();
+            if (question.isBlank()) {
+                showError("Schedule question is required.");
+                return;
+            }
+            runAiAction(
+                    explainButton,
+                    "Generating grounded explanation...",
+                    () -> controller.explainSchedule(question),
+                    explanation -> {
+                        aiOutput.setText(explanation);
+                        statusLabel.setText("Schedule explanation ready");
+                    });
+        });
+
+        Button recoveryButton = new Button("Suggest Workload Recovery");
+        recoveryButton.setDisable(lastInfeasibility == null);
+        recoveryButton.setOnAction(event -> runAiAction(
+                recoveryButton,
+                "Generating recovery suggestions...",
+                () -> controller.requestRecoverySuggestions(lastInfeasibility),
+                recovery -> {
+                    aiOutput.setText(formatRecoveryPlan(recovery));
+                    statusLabel.setText(
+                            "Recovery advice ready; no action was applied");
+                }));
+
+        Button recommendReplanButton = new Button("Recommend Replan Option");
+        recommendReplanButton.setDisable(displayedSchedule == null);
+        Button applyReplanButton = new Button("Apply Recommended Replan");
+        applyReplanButton.setDisable(pendingReplanRecommendation == null);
+        recommendReplanButton.setOnAction(event -> runAiAction(
+                recommendReplanButton,
+                "Evaluating replanning options...",
+                controller::requestReplanRecommendation,
+                recommendation -> {
+                    pendingReplanRecommendation = recommendation;
+                    aiOutput.setText(formatReplanRecommendation(recommendation));
+                    applyReplanButton.setDisable(false);
+                    statusLabel.setText(
+                            "Replan recommendation ready; review before applying");
+                }));
+        applyReplanButton.setOnAction(event -> {
+            if (pendingReplanRecommendation == null) {
+                showError("Request a replanning recommendation first.");
+                return;
+            }
+            replanSchedule(pendingReplanRecommendation.recommendedOption());
+            pendingReplanRecommendation = null;
+        });
+
+        HBox scheduleActions = new HBox(
+                8, explainButton, recoveryButton,
+                recommendReplanButton, applyReplanButton);
+        VBox scheduleAiPanel = new VBox(
+                8, new Label("Schedule question:"), scheduleQuestion,
+                scheduleActions, new Label("AI response:"), aiOutput);
+        VBox.setVgrow(aiOutput, Priority.ALWAYS);
+        VBox schedulePanel = createEditor(
+                "Schedule Advice and Recovery", scheduleAiPanel);
+
+        HBox secondaryPanels = new HBox(16, effortPanel, schedulePanel);
+        HBox.setHgrow(effortPanel, Priority.ALWAYS);
+        HBox.setHgrow(schedulePanel, Priority.ALWAYS);
+        VBox content = new VBox(18, taskParsingPanel, secondaryPanels);
+        ScrollPane scrollPane = new ScrollPane(content);
+        scrollPane.setFitToWidth(true);
+        return createPage(
+                "AI Assistant",
+                "Review every Gemini proposal before it changes planning data.",
+                scrollPane);
+    }
+
     private Node createAvailabilityPage() {
         List<AvailabilityBlock> entries = controller.getAvailability(
                 LocalDateTime.MIN, LocalDateTime.MAX);
@@ -507,10 +738,14 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             displayedSchedule = controller.generateSchedule(planningStart, planningEnd);
             scheduleWarning = "";
             scheduleMayBeOutdated = false;
+            lastInfeasibility = null;
+            pendingReplanRecommendation = null;
             showPage(Page.SCHEDULE);
             statusLabel.setText("Schedule generated");
         } catch (ScheduleInfeasibleException exception) {
             displayedSchedule = exception.getPartialSchedule();
+            lastInfeasibility = exception;
+            pendingReplanRecommendation = null;
             scheduleWarning = String.format(
                     "The full workload does not fit. %.2f hours remain unscheduled; "
                             + "the blocks below are the feasible partial schedule.",
@@ -534,10 +769,14 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             planningEnd = displayedSchedule.getEndDate();
             scheduleWarning = "";
             scheduleMayBeOutdated = false;
+            lastInfeasibility = null;
+            pendingReplanRecommendation = null;
             showPage(Page.SCHEDULE);
             statusLabel.setText("Replan option applied");
         } catch (ScheduleInfeasibleException exception) {
             displayedSchedule = exception.getPartialSchedule();
+            lastInfeasibility = exception;
+            pendingReplanRecommendation = null;
             planningStart = displayedSchedule.getStartDate();
             planningEnd = displayedSchedule.getEndDate();
             scheduleWarning = String.format(
@@ -776,7 +1015,139 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         }
     }
 
-    private String errorMessage(RuntimeException exception) {
+    private <T> void runAiAction(
+            Button trigger,
+            String progressMessage,
+            Supplier<T> operation,
+            Consumer<T> onSuccess) {
+        trigger.setDisable(true);
+        statusLabel.setText(progressMessage);
+        javafx.concurrent.Task<T> backgroundTask = new javafx.concurrent.Task<>() {
+            @Override
+            protected T call() {
+                return operation.get();
+            }
+        };
+        backgroundTask.setOnSucceeded(event -> {
+            trigger.setDisable(false);
+            onSuccess.accept(backgroundTask.getValue());
+        });
+        backgroundTask.setOnFailed(event -> {
+            trigger.setDisable(false);
+            showError(errorMessage(backgroundTask.getException()));
+        });
+        Thread worker = new Thread(backgroundTask, "planpilot-ai-request");
+        worker.setDaemon(true);
+        worker.start();
+    }
+
+    private void populateProposal(
+            ParsedTaskData proposal,
+            TextField titleField,
+            DatePicker deadlineDate,
+            TextField deadlineTime,
+            TextField effortField,
+            ComboBox<Integer> difficultyField,
+            ComboBox<PriorityLevel> importanceField,
+            ComboBox<ParsedTaskKind> kindField,
+            ComboBox<String> courseField,
+            TextField weightField,
+            ComboBox<AcademicTaskType> typeField) {
+        titleField.setText(proposal.title());
+        deadlineDate.setValue(proposal.deadline().toLocalDate());
+        deadlineTime.setText(proposal.deadline().toLocalTime().toString());
+        effortField.setText(Double.toString(proposal.estimatedHours()));
+        difficultyField.setValue(proposal.difficulty());
+        importanceField.setValue(proposal.importance());
+        kindField.setValue(proposal.taskKind());
+        if (proposal.courseCode() == null) {
+            courseField.setValue(null);
+            courseField.getEditor().clear();
+        } else {
+            Course matchingCourse = controller.getCourses().stream()
+                    .filter(course -> course.getId().equalsIgnoreCase(
+                                    proposal.courseCode())
+                            || course.getCode().equalsIgnoreCase(
+                                    proposal.courseCode()))
+                    .findFirst()
+                    .orElse(null);
+            if (matchingCourse == null) {
+                courseField.setValue(null);
+                courseField.getEditor().setText(proposal.courseCode());
+            } else {
+                courseField.setValue(matchingCourse.getId());
+            }
+        }
+        weightField.setText(proposal.assessmentWeight() == null
+                ? "" : proposal.assessmentWeight().toString());
+        typeField.setValue(proposal.academicTaskType());
+    }
+
+    private Task taskFromProposalForm(
+            TextField idField,
+            TextField titleField,
+            DatePicker deadlineDate,
+            TextField deadlineTime,
+            TextField effortField,
+            ComboBox<Integer> difficultyField,
+            ComboBox<PriorityLevel> importanceField,
+            ComboBox<ParsedTaskKind> kindField,
+            ComboBox<String> courseField,
+            TextField weightField,
+            ComboBox<AcademicTaskType> typeField) {
+        String id = required(idField, "Task ID");
+        String title = required(titleField, "Task title");
+        LocalDateTime deadline = combineDateAndTime(
+                deadlineDate, deadlineTime, "Deadline");
+        double effort = positiveDouble(effortField, "Estimated hours");
+        int difficulty = requiredValue(
+                difficultyField.getValue(), "Difficulty");
+        PriorityLevel importance = requiredValue(
+                importanceField.getValue(), "Importance");
+        ParsedTaskKind kind = requiredValue(
+                kindField.getValue(), "Task kind");
+        if (kind == ParsedTaskKind.GENERAL) {
+            return new GeneralTask(
+                    id, title, deadline, effort, difficulty, importance);
+        }
+        return new AcademicTask(
+                id, title, deadline, effort, difficulty, importance,
+                findCourseByIdOrCode(comboText(courseField)),
+                nonNegativeDouble(weightField, "Assessment weight"),
+                requiredValue(typeField.getValue(), "Academic type"));
+    }
+
+    private String comboText(ComboBox<String> comboBox) {
+        String editorText = comboBox.getEditor().getText();
+        if (editorText != null && !editorText.isBlank()) {
+            return editorText.trim();
+        }
+        return comboBox.getValue();
+    }
+
+    static String formatRecoveryPlan(RecoveryPlan recovery) {
+        StringBuilder text = new StringBuilder(recovery.summary());
+        recovery.suggestions().forEach(suggestion -> text
+                .append(System.lineSeparator())
+                .append("- ").append(suggestion.action())
+                .append(": ").append(suggestion.explanation()));
+        text.append(System.lineSeparator())
+                .append("No action has been applied.");
+        return text.toString();
+    }
+
+    static String formatReplanRecommendation(
+            ReplanRecommendation recommendation) {
+        return recommendation.impactSummary()
+                + System.lineSeparator()
+                + "Recommended: " + recommendation.recommendedOption()
+                + System.lineSeparator()
+                + recommendation.rationale()
+                + System.lineSeparator()
+                + "Review before applying.";
+    }
+
+    private String errorMessage(Throwable exception) {
         return exception.getMessage() == null
                 ? exception.getClass().getSimpleName()
                 : exception.getMessage();
@@ -809,6 +1180,30 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException(
                         "No course exists with ID " + courseId + "."));
+    }
+
+    private Course findCourseByIdOrCode(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Course ID or code is required.");
+        }
+        return controller.getCourses().stream()
+                .filter(course -> course.getId().equalsIgnoreCase(value)
+                        || course.getCode().equalsIgnoreCase(value))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No course exists with ID or code " + value + "."));
+    }
+
+    private Task findTask(String taskId) {
+        if (taskId == null || taskId.isBlank()) {
+            throw new IllegalArgumentException("Select a task first.");
+        }
+        return controller.getTasks().stream()
+                .filter(task -> task.getId().equals(taskId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No task exists with ID " + taskId + "."));
     }
 
     private LocalDateTime combineDateAndTime(
@@ -909,7 +1304,8 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         TASKS("Tasks"),
         AVAILABILITY("Availability"),
         SCHEDULE("Schedule"),
-        PROGRESS("Progress");
+        PROGRESS("Progress"),
+        AI_ASSISTANT("AI Assistant");
 
         private final String label;
 
