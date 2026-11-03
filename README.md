@@ -58,6 +58,19 @@ For an existing plan, `requestReplanRecommendation()` summarizes the changed
 workload and recommends one validated `ReplanOption`. The recommendation is
 advisory; only a separate user-approved `requestReplan(...)` changes the schedule.
 
+## Run the CLI
+
+Launch the menu-driven CLI with:
+
+```sh
+mvn -q compile exec:java \
+  -Dexec.mainClass=com.planpilot.cli.PlanPilotCLI
+```
+
+AI menu actions use the same controller facade as deterministic actions. Parsed
+tasks, effort changes, recovery actions, and replanning remain subject to explicit
+user confirmation.
+
 ## Build and Test
 
 Use JDK 17 and Maven, then run:

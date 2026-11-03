@@ -1,5 +1,10 @@
 package com.planpilot.cli;
 
+import com.planpilot.ai.ParsedTaskData;
+import com.planpilot.ai.ParsedTaskKind;
+import com.planpilot.ai.RecoveryPlan;
+import com.planpilot.ai.RecoverySuggestion;
+import com.planpilot.ai.ReplanRecommendation;
 import com.planpilot.config.PlanPilotApplicationFactory;
 import com.planpilot.controller.PlanPilotController;
 import com.planpilot.domain.AcademicTask;
@@ -74,6 +79,10 @@ public class PlanPilotCLI {
         output.println("7. Display study blocks");
         output.println("8. Record progress");
         output.println("9. View current task status");
+        output.println("10. Add task from natural language (AI)");
+        output.println("11. Request effort suggestion (AI)");
+        output.println("12. Explain current schedule (AI)");
+        output.println("13. Request replanning recommendation (AI)");
         output.println("0. Exit");
         output.print("Choose an option: ");
     }
@@ -88,8 +97,12 @@ public class PlanPilotCLI {
             case "6" -> generateSchedule();
             case "7" -> displaySchedule();
             case "8" -> recordProgress();
+            case "10" -> addNaturalLanguageTask();
+            case "11" -> requestEffortSuggestion();
+            case "12" -> explainSchedule();
+            case "13" -> requestReplanRecommendation();
             case "0" -> running = false;
-            default -> output.println("Unknown option. Enter a number from 0 to 9.");
+            default -> output.println("Unknown option. Enter a number from 0 to 13.");
         }
     }
 
@@ -171,6 +184,179 @@ public class PlanPilotCLI {
             output.printf(
                     "Schedule is incomplete: %.2f hours could not be scheduled.%n",
                     exception.getWorkloadDeficitHours());
+            displayRecoverySuggestions(exception);
+        }
+        displaySchedule();
+    }
+
+    private void displayRecoverySuggestions(
+            ScheduleInfeasibleException exception) {
+        try {
+            RecoveryPlan recovery = controller.requestRecoverySuggestions(exception);
+            output.println("AI recovery summary: " + recovery.summary());
+            for (RecoverySuggestion suggestion : recovery.suggestions()) {
+                output.printf("- %s: %s%n",
+                        suggestion.action(), suggestion.explanation());
+            }
+            output.println("No recovery action was applied automatically.");
+        } catch (RuntimeException aiFailure) {
+            output.println("AI recovery suggestions unavailable: "
+                    + errorMessage(aiFailure));
+        }
+    }
+
+    private void addNaturalLanguageTask() {
+        ParsedTaskData proposal = controller.parseNaturalLanguageTask(
+                prompt("Describe the task: "));
+        displayTaskProposal(proposal);
+        String action = prompt("Proposal action (accept/edit/cancel): ")
+                .toLowerCase(Locale.ROOT);
+        if (action.equals("cancel")) {
+            output.println("Task proposal cancelled; nothing was saved.");
+            return;
+        }
+        if (action.equals("edit")) {
+            proposal = editProposal(proposal);
+            displayTaskProposal(proposal);
+        } else if (!action.equals("accept")) {
+            throw new IllegalArgumentException(
+                    "Proposal action must be accept, edit, or cancel.");
+        }
+
+        Task task = createTaskFromProposal(
+                prompt("Task ID: "), proposal);
+        Task created = controller.addTask(task);
+        knownTasks.put(created.getId(), created);
+        output.println("Proposed task confirmed and added.");
+    }
+
+    private void displayTaskProposal(ParsedTaskData proposal) {
+        output.println("AI task proposal (not yet saved):");
+        output.printf("- %s | %s | %.2f hours | difficulty %d | %s | %s%n",
+                proposal.title(), proposal.deadline(),
+                proposal.estimatedHours(), proposal.difficulty(),
+                proposal.importance(), proposal.taskKind());
+        if (proposal.taskKind() == ParsedTaskKind.ACADEMIC) {
+            output.printf("- course=%s | weight=%s | type=%s%n",
+                    proposal.courseCode(), proposal.assessmentWeight(),
+                    proposal.academicTaskType());
+        }
+    }
+
+    private ParsedTaskData editProposal(ParsedTaskData proposal) {
+        String title = promptWithDefault("Title", proposal.title());
+        LocalDateTime deadline = LocalDateTime.parse(
+                promptWithDefault("Deadline", proposal.deadline().toString()));
+        double hours = Double.parseDouble(promptWithDefault(
+                "Estimated hours", Double.toString(proposal.estimatedHours())));
+        int difficulty = Integer.parseInt(promptWithDefault(
+                "Difficulty", Integer.toString(proposal.difficulty())));
+        PriorityLevel importance = parseEnum(
+                PriorityLevel.class,
+                promptWithDefault("Importance", proposal.importance().name()));
+        ParsedTaskKind kind = parseEnum(
+                ParsedTaskKind.class,
+                promptWithDefault("Task kind", proposal.taskKind().name()));
+
+        String courseCode = null;
+        Double weight = null;
+        AcademicTaskType taskType = null;
+        if (kind == ParsedTaskKind.ACADEMIC) {
+            courseCode = promptWithDefault(
+                    "Course code or ID", optional(proposal.courseCode()));
+            String weightText = promptWithDefault(
+                    "Assessment weight",
+                    proposal.assessmentWeight() == null
+                            ? "0"
+                            : proposal.assessmentWeight().toString());
+            weight = Double.parseDouble(weightText);
+            taskType = parseEnum(
+                    AcademicTaskType.class,
+                    promptWithDefault(
+                            "Academic task type",
+                            proposal.academicTaskType() == null
+                                    ? AcademicTaskType.STUDY.name()
+                                    : proposal.academicTaskType().name()));
+        }
+        return new ParsedTaskData(
+                title, deadline, hours, difficulty, importance, kind,
+                courseCode, weight, taskType);
+    }
+
+    private Task createTaskFromProposal(
+            String id, ParsedTaskData proposal) {
+        if (proposal.taskKind() == ParsedTaskKind.GENERAL) {
+            return new GeneralTask(
+                    id, proposal.title(), proposal.deadline(),
+                    proposal.estimatedHours(), proposal.difficulty(),
+                    proposal.importance());
+        }
+        Course course = proposal.courseCode() == null
+                ? findCourse(prompt("Course ID: "))
+                : findCourseByIdOrCode(proposal.courseCode());
+        double weight = proposal.assessmentWeight() == null
+                ? Double.parseDouble(prompt("Assessment weight (0-100): "))
+                : proposal.assessmentWeight();
+        AcademicTaskType taskType = proposal.academicTaskType() == null
+                ? parseEnum(AcademicTaskType.class,
+                prompt("Type (ASSIGNMENT/EXAM/QUIZ/PROJECT/READING/STUDY): "))
+                : proposal.academicTaskType();
+        return new AcademicTask(
+                id, proposal.title(), proposal.deadline(),
+                proposal.estimatedHours(), proposal.difficulty(),
+                proposal.importance(), course, weight, taskType);
+    }
+
+    private void requestEffortSuggestion() {
+        Task task = findTask(prompt("Task ID: "));
+        double suggestion = controller.requestEffortSuggestion(task);
+        output.printf("Current estimate: %.2f hours%n",
+                task.getEstimatedHours());
+        output.printf("AI suggested estimate: %.2f hours%n", suggestion);
+        String replacement = prompt(
+                "New estimate (blank to ignore; enter any positive value): ");
+        if (replacement.isBlank()) {
+            output.println("Suggestion ignored; estimate unchanged.");
+            return;
+        }
+        double confirmedEstimate = Double.parseDouble(replacement);
+        if (!Double.isFinite(confirmedEstimate) || confirmedEstimate <= 0) {
+            throw new IllegalArgumentException(
+                    "Confirmed estimate must be a positive finite value.");
+        }
+        task.setEstimatedHours(confirmedEstimate);
+        controller.updateTask(task);
+        output.println("Task estimate updated by user confirmation.");
+    }
+
+    private void explainSchedule() {
+        String explanation = controller.explainSchedule(
+                prompt("Schedule question: "));
+        output.println("AI explanation: " + explanation);
+    }
+
+    private void requestReplanRecommendation() {
+        ReplanRecommendation recommendation =
+                controller.requestReplanRecommendation();
+        output.println("AI impact summary: "
+                + recommendation.impactSummary());
+        output.println("Recommended option: "
+                + recommendation.recommendedOption());
+        output.println("Reason: " + recommendation.rationale());
+        if (!yes(prompt("Apply this replanning option? (yes/no): "))) {
+            output.println("Recommendation not applied.");
+            return;
+        }
+        try {
+            currentSchedule = controller.requestReplan(
+                    recommendation.recommendedOption());
+            output.println("Replanning option applied by user request.");
+        } catch (ScheduleInfeasibleException exception) {
+            currentSchedule = exception.getPartialSchedule();
+            output.printf(
+                    "Replanned schedule remains incomplete: %.2f hours could not be scheduled.%n",
+                    exception.getWorkloadDeficitHours());
+            displayRecoverySuggestions(exception);
         }
         displaySchedule();
     }
@@ -251,12 +437,43 @@ public class PlanPilotCLI {
                         "No course exists with id " + courseId + "."));
     }
 
+    private Course findCourseByIdOrCode(String value) {
+        return controller.getCourses().stream()
+                .filter(course -> course.getId().equalsIgnoreCase(value)
+                        || course.getCode().equalsIgnoreCase(value))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No course exists with id or code " + value + "."));
+    }
+
+    private Task findTask(String taskId) {
+        return controller.getTasks().stream()
+                .filter(task -> task.getId().equals(taskId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "No task exists with id " + taskId + "."));
+    }
+
     private String prompt(String message) {
         output.print(message);
         if (!scanner.hasNextLine()) {
             throw new IllegalStateException("Input ended unexpectedly.");
         }
         return scanner.nextLine().trim();
+    }
+
+    private String promptWithDefault(String field, String defaultValue) {
+        String value = prompt(field + " [" + defaultValue + "]: ");
+        return value.isBlank() ? defaultValue : value;
+    }
+
+    private String optional(String value) {
+        return value == null ? "" : value;
+    }
+
+    private boolean yes(String value) {
+        return value.equalsIgnoreCase("yes")
+                || value.equalsIgnoreCase("y");
     }
 
     private <E extends Enum<E>> E parseEnum(Class<E> enumType, String value) {
