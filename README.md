@@ -54,6 +54,10 @@ After deterministic generation reports a `ScheduleInfeasibleException`,
 may explain options such as extending the window or adding availability, but the
 user must choose and apply any change explicitly.
 
+For an existing plan, `requestReplanRecommendation()` summarizes the changed
+workload and recommends one validated `ReplanOption`. The recommendation is
+advisory; only a separate user-approved `requestReplan(...)` changes the schedule.
+
 ## Build and Test
 
 Use JDK 17 and Maven, then run:

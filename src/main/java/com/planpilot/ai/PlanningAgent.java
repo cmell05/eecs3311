@@ -6,9 +6,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.planpilot.domain.AcademicTask;
 import com.planpilot.domain.AvailabilityBlock;
+import com.planpilot.domain.ProgressStatus;
 import com.planpilot.domain.Schedule;
 import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.Task;
+import com.planpilot.domain.UserPreferences;
+import com.planpilot.service.ReplanOption;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -112,6 +115,24 @@ public final class PlanningAgent {
         return parseRecoveryPlan(response);
     }
 
+    public ReplanRecommendation suggestReplanningOption(
+            Schedule schedule,
+            List<Task> openTasks,
+            List<AvailabilityBlock> availability,
+            UserPreferences preferences) {
+        Objects.requireNonNull(schedule, "Schedule cannot be null.");
+        requireNonNullElements(openTasks, "Open tasks");
+        requireNonNullElements(availability, "Availability");
+        Objects.requireNonNull(preferences,
+                "User preferences cannot be null.");
+
+        String response = llmClient.generateText(
+                replanningSystemInstruction(),
+                createReplanningPrompt(
+                        schedule, openTasks, availability, preferences));
+        return parseReplanRecommendation(response);
+    }
+
     private String taskParsingSystemInstruction() {
         return "Convert a task description into a proposed task. Use the "
                 + "provided reference time to resolve relative dates. Return "
@@ -156,6 +177,79 @@ public final class PlanningAgent {
                 + "DEFER_LOWER_PRIORITY_TASK, and KEEP_CURRENT_CONSTRAINTS. "
                 + "Never claim to apply an action, change a deadline, delete "
                 + "work, or regenerate the schedule. The user must choose.";
+    }
+
+    private String replanningSystemInstruction() {
+        return "Summarize the impact of the supplied planning state and "
+                + "recommend exactly one existing replanning option. Return "
+                + "one JSON object with impactSummary, recommendedOption, and "
+                + "rationale. recommendedOption must be one of "
+                + "REPLAN_ENTIRE_WINDOW, RESCHEDULE_INCOMPLETE_WORK, "
+                + "EXTEND_PLANNING_WINDOW, or KEEP_CURRENT_SCHEDULE. Use only "
+                + "the supplied facts. Do not claim to apply the option, alter "
+                + "tasks, or regenerate the schedule. The user decides whether "
+                + "to proceed.";
+    }
+
+    private String createReplanningPrompt(
+            Schedule schedule,
+            List<Task> openTasks,
+            List<AvailabilityBlock> availability,
+            UserPreferences preferences) {
+        ObjectNode root = objectMapper.createObjectNode();
+        addScheduleContext(root.putObject("currentSchedule"), schedule);
+        var taskNodes = root.putArray("openTasks");
+        for (Task task : openTasks) {
+            addTaskContext(taskNodes.addObject(), task);
+        }
+        root.put("totalRemainingEffortHours", openTasks.stream()
+                .mapToDouble(Task::getRemainingHours)
+                .sum());
+        root.put("currentlyPlannedHours", schedule.getStudyBlocks().stream()
+                .filter(block -> block.getProgressStatus()
+                        != ProgressStatus.COMPLETED)
+                .mapToDouble(StudyBlock::durationHours)
+                .sum());
+        addAvailabilityContext(root, availability);
+        ObjectNode preferencesNode = root.putObject("userPreferences");
+        preferencesNode.put("maxSessionLengthMinutes",
+                preferences.getMaxSessionLength());
+        preferencesNode.put("preferredStudyPeriod",
+                preferences.getPreferredStudyPeriod().name());
+        preferencesNode.put("breakLengthMinutes",
+                preferences.getBreakLength());
+        return writeJson(root, "replanning recommendation request");
+    }
+
+    private ReplanRecommendation parseReplanRecommendation(String response) {
+        Objects.requireNonNull(response, "LLM response cannot be null.");
+        if (response.isBlank()) {
+            throw invalidReplanningResponse(null);
+        }
+        try {
+            JsonNode root = objectMapper.readTree(response.trim());
+            if (root == null
+                    || !root.isObject()
+                    || !root.path("impactSummary").isTextual()
+                    || !root.path("recommendedOption").isTextual()
+                    || !root.path("rationale").isTextual()) {
+                throw invalidReplanningResponse(null);
+            }
+            return new ReplanRecommendation(
+                    root.path("impactSummary").asText(),
+                    ReplanOption.valueOf(
+                            root.path("recommendedOption").asText()),
+                    root.path("rationale").asText());
+        } catch (JsonProcessingException | IllegalArgumentException exception) {
+            throw invalidReplanningResponse(exception);
+        }
+    }
+
+    private LLMClientException invalidReplanningResponse(Throwable cause) {
+        String message = "The LLM returned an invalid replanning recommendation.";
+        return cause == null
+                ? new LLMClientException(message)
+                : new LLMClientException(message, cause);
     }
 
     private String createRecoveryPrompt(

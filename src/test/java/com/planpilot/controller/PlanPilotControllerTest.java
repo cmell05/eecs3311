@@ -4,6 +4,7 @@ import com.planpilot.ai.PlanningAgent;
 import com.planpilot.ai.ParsedTaskData;
 import com.planpilot.ai.RecoveryAction;
 import com.planpilot.ai.RecoveryPlan;
+import com.planpilot.ai.ReplanRecommendation;
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.AvailabilityType;
 import com.planpilot.domain.AcademicTask;
@@ -351,6 +352,42 @@ class PlanPilotControllerTest {
                 scheduleService.getCurrentSchedule());
         assertEquals(originalDeadline, task.getDeadline());
         assertEquals(2, task.getRemainingHours(), 0.0001);
+    }
+
+    @Test
+    void recommendsReplanningWithoutApplyingIt() {
+        CourseService courseService = new CourseService();
+        TaskService taskService = new TaskService(courseService);
+        AvailabilityService availabilityService = new AvailabilityService();
+        ProgressService progressService = new ProgressService();
+        ScheduleService scheduleService = new ScheduleService(
+                taskService, availabilityService,
+                new SchedulePlanner(task -> 1.0, new ConflictDetector()),
+                new UserPreferences(60, StudyPeriod.ANY, 0));
+        PlanningAgent planningAgent = new PlanningAgent(
+                (systemInstruction, userPrompt) -> """
+                        {"impactSummary":"The schedule is outdated.",
+                        "recommendedOption":"REPLAN_ENTIRE_WINDOW",
+                        "rationale":"A new task must be incorporated."}
+                        """);
+        PlanPilotController aiController = new PlanPilotController(
+                courseService, taskService, availabilityService,
+                scheduleService, progressService, null, planningAgent);
+        aiController.addTask(task("T1", 1));
+        aiController.addAvailability(new AvailabilityBlock(
+                "A1", start, start.plusHours(3),
+                AvailabilityType.AVAILABLE));
+        Schedule original = aiController.generateSchedule(date, date);
+        aiController.addTask(task("T2", 1));
+
+        ReplanRecommendation recommendation =
+                aiController.requestReplanRecommendation();
+
+        assertEquals(ReplanOption.REPLAN_ENTIRE_WINDOW,
+                recommendation.recommendedOption());
+        assertSame(original, scheduleService.getCurrentSchedule());
+        assertEquals(ScheduleStatus.OUTDATED, original.getStatus());
+        assertEquals(1, original.getStudyBlocks().size());
     }
 
     private Task task(String id, double hours) {

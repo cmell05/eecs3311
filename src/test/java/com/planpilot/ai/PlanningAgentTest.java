@@ -8,7 +8,10 @@ import com.planpilot.domain.Course;
 import com.planpilot.domain.PriorityLevel;
 import com.planpilot.domain.Schedule;
 import com.planpilot.domain.StudyBlock;
+import com.planpilot.domain.StudyPeriod;
 import com.planpilot.domain.Task;
+import com.planpilot.domain.UserPreferences;
+import com.planpilot.service.ReplanOption;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -227,6 +230,67 @@ class PlanningAgentTest {
         assertThrows(LLMClientException.class,
                 () -> duplicateActionAgent.suggestRecovery(
                         1, schedule, List.of(), List.of()));
+    }
+
+    @Test
+    void recommendsValidatedReplanningOptionFromCurrentState()
+            throws Exception {
+        FakeLLMClient fakeClient = new FakeLLMClient("""
+                {"impactSummary":"One new task is not in the current plan.",
+                "recommendedOption":"REPLAN_ENTIRE_WINDOW",
+                "rationale":"Rebuild the window to include all open work."}
+                """);
+        PlanningAgent agent = new PlanningAgent(fakeClient);
+        Task task = academicTask();
+        Schedule schedule = new Schedule(
+                "S1", LocalDate.of(2026, 11, 3),
+                LocalDate.of(2026, 11, 4));
+        schedule.addStudyBlock(new StudyBlock(
+                "B1", task,
+                LocalDateTime.of(2026, 11, 3, 9, 0),
+                LocalDateTime.of(2026, 11, 3, 10, 0)));
+        schedule.markOutdated();
+        AvailabilityBlock availability = new AvailabilityBlock(
+                "A1",
+                LocalDateTime.of(2026, 11, 3, 9, 0),
+                LocalDateTime.of(2026, 11, 3, 12, 0),
+                AvailabilityType.AVAILABLE);
+
+        ReplanRecommendation recommendation =
+                agent.suggestReplanningOption(
+                        schedule, List.of(task), List.of(availability),
+                        new UserPreferences(60, StudyPeriod.MORNING, 10));
+
+        assertEquals(ReplanOption.REPLAN_ENTIRE_WINDOW,
+                recommendation.recommendedOption());
+        var context = new ObjectMapper().readTree(fakeClient.getUserPrompt());
+        assertEquals("OUTDATED", context.path("currentSchedule")
+                .path("status").asText());
+        assertEquals(5, context.path("totalRemainingEffortHours")
+                .asDouble(), 0.0001);
+        assertEquals(1, context.path("currentlyPlannedHours")
+                .asDouble(), 0.0001);
+        assertEquals("MORNING", context.path("userPreferences")
+                .path("preferredStudyPeriod").asText());
+        assertTrue(fakeClient.getSystemInstruction().contains(
+                "The user decides whether to proceed"));
+    }
+
+    @Test
+    void rejectsInventedReplanningOption() {
+        PlanningAgent agent = new PlanningAgent(new FakeLLMClient("""
+                {"impactSummary":"Changes detected",
+                "recommendedOption":"AUTOMATICALLY_MOVE_DEADLINE",
+                "rationale":"Create more time"}
+                """));
+        Schedule schedule = new Schedule(
+                "S1", LocalDate.of(2026, 11, 3),
+                LocalDate.of(2026, 11, 3));
+
+        assertThrows(LLMClientException.class,
+                () -> agent.suggestReplanningOption(
+                        schedule, List.of(), List.of(),
+                        new UserPreferences(60, StudyPeriod.ANY, 0)));
     }
 
     private Task academicTask() {

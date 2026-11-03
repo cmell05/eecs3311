@@ -3,6 +3,7 @@ package com.planpilot.controller;
 import com.planpilot.ai.ParsedTaskData;
 import com.planpilot.ai.PlanningAgent;
 import com.planpilot.ai.RecoveryPlan;
+import com.planpilot.ai.ReplanRecommendation;
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.Course;
 import com.planpilot.domain.ProgressRecord;
@@ -230,6 +231,22 @@ public class PlanPilotController {
                 partialSchedule,
                 taskService.getOpenTasks(),
                 availabilityService.getAvailability(windowStart, windowEnd));
+    }
+
+    public ReplanRecommendation requestReplanRecommendation() {
+        if (planningAgent == null) {
+            throw new UnsupportedOperationException(
+                    "Replanning recommendations are not configured.");
+        }
+        Schedule schedule = scheduleService.getCurrentSchedule();
+        LocalDateTime windowStart = schedule.getStartDate().atStartOfDay();
+        LocalDateTime windowEnd = schedule.getEndDate()
+                .plusDays(1).atStartOfDay();
+        return planningAgent.suggestReplanningOption(
+                schedule,
+                taskService.getOpenTasks(),
+                availabilityService.getAvailability(windowStart, windowEnd),
+                scheduleService.getPreferences());
     }
 
     private static void requireText(String value, String fieldName) {
