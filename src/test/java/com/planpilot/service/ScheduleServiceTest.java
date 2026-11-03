@@ -53,6 +53,13 @@ class ScheduleServiceTest {
 
         assertEquals(1, schedule.getStudyBlocks().size());
         assertEquals(ScheduleStatus.CURRENT, schedule.getStatus());
+        assertSame(schedule, scheduleService.getCurrentSchedule());
+    }
+
+    @Test
+    void currentScheduleIsUnavailableBeforeGeneration() {
+        assertThrows(IllegalStateException.class,
+                scheduleService::getCurrentSchedule);
     }
 
     @Test

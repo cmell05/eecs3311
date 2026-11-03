@@ -2,16 +2,22 @@ package com.planpilot.ai;
 
 import com.planpilot.domain.AcademicTask;
 import com.planpilot.domain.AcademicTaskType;
+import com.planpilot.domain.AvailabilityBlock;
+import com.planpilot.domain.AvailabilityType;
 import com.planpilot.domain.Course;
 import com.planpilot.domain.PriorityLevel;
+import com.planpilot.domain.Schedule;
+import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.Task;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.OptionalDouble;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -92,6 +98,59 @@ class PlanningAgentTest {
                 "\"referenceDateTime\":\"2026-11-03T15:30\""));
         assertTrue(fakeClient.getUserPrompt().contains(
                 "Prepare for interview next Thursday"));
+    }
+
+    @Test
+    void explainsScheduleUsingOnlySuppliedStructuredContext() throws Exception {
+        FakeLLMClient fakeClient = new FakeLLMClient(
+                "The project is due soon and has high importance.");
+        PlanningAgent agent = new PlanningAgent(fakeClient);
+        Task task = academicTask();
+        Schedule schedule = new Schedule(
+                "S1", LocalDate.of(2026, 11, 3),
+                LocalDate.of(2026, 11, 4));
+        schedule.addStudyBlock(new StudyBlock(
+                "B1", task,
+                LocalDateTime.of(2026, 11, 3, 9, 0),
+                LocalDateTime.of(2026, 11, 3, 10, 0)));
+        AvailabilityBlock availability = new AvailabilityBlock(
+                "A1",
+                LocalDateTime.of(2026, 11, 3, 9, 0),
+                LocalDateTime.of(2026, 11, 3, 12, 0),
+                AvailabilityType.AVAILABLE);
+
+        String explanation = agent.explainSchedule(
+                "Why is the project first?", schedule, List.of(availability));
+
+        assertEquals(
+                "The project is due soon and has high importance.",
+                explanation);
+        assertTrue(fakeClient.getSystemInstruction().contains(
+                "using only the supplied JSON facts"));
+        var context = new ObjectMapper().readTree(fakeClient.getUserPrompt());
+        assertEquals("Why is the project first?",
+                context.path("question").asText());
+        assertEquals("Project", context.path("schedule")
+                .path("studyBlocks").path(0).path("task")
+                .path("title").asText());
+        assertEquals(25, context.path("schedule")
+                .path("studyBlocks").path(0).path("task")
+                .path("assessmentWeight").asDouble(), 0.0001);
+        assertEquals("AVAILABLE", context.path("availability")
+                .path(0).path("type").asText());
+        assertEquals(1, schedule.getStudyBlocks().size());
+    }
+
+    @Test
+    void rejectsEmptyScheduleExplanation() {
+        PlanningAgent agent = new PlanningAgent(new FakeLLMClient("  "));
+        Schedule schedule = new Schedule(
+                "S1", LocalDate.of(2026, 11, 3),
+                LocalDate.of(2026, 11, 3));
+
+        assertThrows(LLMClientException.class,
+                () -> agent.explainSchedule(
+                        "Why?", schedule, List.of()));
     }
 
     private Task academicTask() {

@@ -276,6 +276,41 @@ class PlanPilotControllerTest {
         assertEquals(List.of(), aiController.getTasks());
     }
 
+    @Test
+    void explainsCurrentScheduleWithoutChangingIt() {
+        CourseService courseService = new CourseService();
+        TaskService taskService = new TaskService(courseService);
+        AvailabilityService availabilityService = new AvailabilityService();
+        ProgressService progressService = new ProgressService();
+        SchedulePlanner schedulePlanner = new SchedulePlanner(
+                task -> 1.0, new ConflictDetector());
+        ScheduleService scheduleService = new ScheduleService(
+                taskService, availabilityService, schedulePlanner,
+                new UserPreferences(60, StudyPeriod.ANY, 0));
+        PlanningAgent planningAgent = new PlanningAgent(
+                (systemInstruction, userPrompt) ->
+                        "It was placed in the available morning slot.");
+        PlanPilotController aiController = new PlanPilotController(
+                courseService, taskService, availabilityService,
+                scheduleService, progressService, null, planningAgent);
+        Task task = task("T1", 1);
+        aiController.addTask(task);
+        aiController.addAvailability(new AvailabilityBlock(
+                "A1", start, start.plusHours(2),
+                AvailabilityType.AVAILABLE));
+        Schedule schedule = aiController.generateSchedule(date, date);
+        List<StudyBlock> originalBlocks = schedule.getStudyBlocks();
+
+        String explanation = aiController.explainSchedule(
+                "Why was this task scheduled in the morning?");
+
+        assertEquals("It was placed in the available morning slot.",
+                explanation);
+        assertSame(schedule, scheduleService.getCurrentSchedule());
+        assertEquals(originalBlocks, schedule.getStudyBlocks());
+        assertEquals(ScheduleStatus.CURRENT, schedule.getStatus());
+    }
+
     private Task task(String id, double hours) {
         return new GeneralTask(
                 id, "Task " + id, start.plusDays(1), hours,

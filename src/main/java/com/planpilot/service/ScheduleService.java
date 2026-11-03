@@ -152,6 +152,11 @@ public class ScheduleService {
                 preferences.getBreakLength());
     }
 
+    public Schedule getCurrentSchedule() {
+        requireCurrentSchedule();
+        return currentSchedule;
+    }
+
     public void updatePreferences(UserPreferences updatedPreferences) {
         Objects.requireNonNull(
                 updatedPreferences, "User preferences cannot be null.");

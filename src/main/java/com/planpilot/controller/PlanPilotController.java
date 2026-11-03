@@ -196,8 +196,18 @@ public class PlanPilotController {
 
     public String explainSchedule(String question) {
         requireText(question, "Schedule question");
-        throw new UnsupportedOperationException(
-                "Schedule explanations are not available until AI integration is implemented.");
+        if (planningAgent == null) {
+            throw new UnsupportedOperationException(
+                    "Schedule explanations are not configured.");
+        }
+        Schedule schedule = scheduleService.getCurrentSchedule();
+        LocalDateTime windowStart = schedule.getStartDate().atStartOfDay();
+        LocalDateTime windowEnd = schedule.getEndDate()
+                .plusDays(1).atStartOfDay();
+        return planningAgent.explainSchedule(
+                question,
+                schedule,
+                availabilityService.getAvailability(windowStart, windowEnd));
     }
 
     private static void requireText(String value, String fieldName) {

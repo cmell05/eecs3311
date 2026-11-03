@@ -5,11 +5,15 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.planpilot.domain.AcademicTask;
+import com.planpilot.domain.AvailabilityBlock;
+import com.planpilot.domain.Schedule;
+import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.Task;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.Locale;
+import java.util.List;
 import java.util.Objects;
 import java.util.OptionalDouble;
 
@@ -63,6 +67,27 @@ public final class PlanningAgent {
         return taskParser.parse(response);
     }
 
+    public String explainSchedule(
+            String question,
+            Schedule schedule,
+            List<AvailabilityBlock> availability) {
+        requireText(question, "Schedule question");
+        Objects.requireNonNull(schedule, "Schedule cannot be null.");
+        Objects.requireNonNull(availability, "Availability cannot be null.");
+        availability.forEach(block -> Objects.requireNonNull(
+                block, "Availability cannot contain null blocks."));
+
+        String response = llmClient.generateText(
+                scheduleExplanationSystemInstruction(),
+                createScheduleExplanationPrompt(
+                        question, schedule, availability));
+        if (response == null || response.isBlank()) {
+            throw new LLMClientException(
+                    "The LLM returned an empty schedule explanation.");
+        }
+        return response.trim();
+    }
+
     private String taskParsingSystemInstruction() {
         return "Convert a task description into a proposed task. Use the "
                 + "provided reference time to resolve relative dates. Return "
@@ -85,6 +110,78 @@ public final class PlanningAgent {
         } catch (JsonProcessingException exception) {
             throw new LLMClientException(
                     "Unable to create the task parsing request.", exception);
+        }
+    }
+
+    private String scheduleExplanationSystemInstruction() {
+        return "Explain the scheduling decision using only the supplied JSON "
+                + "facts. Do not invent tasks, deadlines, priorities, "
+                + "availability, or study blocks. If the context cannot answer "
+                + "the question, say that the information is unavailable. "
+                + "The explanation is read-only: do not claim to modify or "
+                + "regenerate the schedule. Keep the answer concise.";
+    }
+
+    private String createScheduleExplanationPrompt(
+            String question,
+            Schedule schedule,
+            List<AvailabilityBlock> availability) {
+        ObjectNode root = objectMapper.createObjectNode();
+        root.put("question", question.trim());
+        ObjectNode scheduleNode = root.putObject("schedule");
+        scheduleNode.put("id", schedule.getId());
+        scheduleNode.put("startDate", schedule.getStartDate().toString());
+        scheduleNode.put("endDate", schedule.getEndDate().toString());
+        scheduleNode.put("status", schedule.getStatus().name());
+
+        var studyBlocks = scheduleNode.putArray("studyBlocks");
+        for (StudyBlock block : schedule.getStudyBlocks()) {
+            ObjectNode blockNode = studyBlocks.addObject();
+            blockNode.put("id", block.getId());
+            blockNode.put("start", block.getStart().toString());
+            blockNode.put("end", block.getEnd().toString());
+            blockNode.put("durationHours", block.durationHours());
+            blockNode.put("progressStatus",
+                    block.getProgressStatus().name());
+            addTaskContext(blockNode.putObject("task"), block.getTask());
+        }
+
+        var availabilityNodes = root.putArray("availability");
+        for (AvailabilityBlock block : availability) {
+            ObjectNode blockNode = availabilityNodes.addObject();
+            blockNode.put("id", block.getId());
+            blockNode.put("start", block.getStart().toString());
+            blockNode.put("end", block.getEnd().toString());
+            blockNode.put("type", block.getType().name());
+        }
+        try {
+            return objectMapper.writeValueAsString(root);
+        } catch (JsonProcessingException exception) {
+            throw new LLMClientException(
+                    "Unable to create the schedule explanation request.",
+                    exception);
+        }
+    }
+
+    private void addTaskContext(ObjectNode node, Task task) {
+        node.put("id", task.getId());
+        node.put("title", task.getTitle());
+        node.put("kind",
+                task instanceof AcademicTask ? "ACADEMIC" : "GENERAL");
+        node.put("deadline", task.getDeadline().toString());
+        node.put("estimatedHours", task.getEstimatedHours());
+        node.put("completedHours", task.getCompletedHours());
+        node.put("remainingHours", task.getRemainingHours());
+        node.put("difficulty", task.getDifficulty());
+        node.put("importance", task.getUserImportance().name());
+        node.put("status", task.getStatus().name());
+        if (task instanceof AcademicTask academicTask) {
+            node.put("courseCode", academicTask.getCourse().getCode());
+            node.put("courseName", academicTask.getCourse().getName());
+            node.put("assessmentWeight",
+                    academicTask.getAssessmentWeight());
+            node.put("academicTaskType",
+                    academicTask.getTaskType().name());
         }
     }
 

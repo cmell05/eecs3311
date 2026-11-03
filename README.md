@@ -45,6 +45,10 @@ suggestion only and never changes the task's user-selected estimate automaticall
 validated `ParsedTaskData`. The result is only a proposal: the caller must show it
 for review and explicitly create a task after the user confirms or edits it.
 
+`PlanPilotController.explainSchedule(...)` sends Gemini a read-only JSON snapshot
+of the current schedule, task priority factors, and availability. The explanation
+cannot modify or regenerate the deterministic schedule.
+
 ## Build and Test
 
 Use JDK 17 and Maven, then run:
