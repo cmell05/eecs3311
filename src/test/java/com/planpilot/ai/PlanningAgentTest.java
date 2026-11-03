@@ -153,6 +153,82 @@ class PlanningAgentTest {
                         "Why?", schedule, List.of()));
     }
 
+    @Test
+    void suggestsValidatedRecoveryActionsFromInfeasibleContext()
+            throws Exception {
+        FakeLLMClient fakeClient = new FakeLLMClient("""
+                {
+                  "summary":"Two hours do not fit in the current window.",
+                  "suggestions":[
+                    {"action":"EXTEND_PLANNING_WINDOW",
+                     "explanation":"Add another day for the remaining work."},
+                    {"action":"ADD_AVAILABILITY",
+                     "explanation":"Provide two additional study hours."}
+                  ]
+                }
+                """);
+        PlanningAgent agent = new PlanningAgent(fakeClient);
+        Task scheduledTask = academicTask();
+        Task unscheduledTask = new com.planpilot.domain.GeneralTask(
+                "T2", "Interview preparation",
+                LocalDateTime.of(2026, 11, 5, 12, 0),
+                2, 3, PriorityLevel.MEDIUM);
+        Schedule partialSchedule = new Schedule(
+                "S1", LocalDate.of(2026, 11, 3),
+                LocalDate.of(2026, 11, 3));
+        partialSchedule.addStudyBlock(new StudyBlock(
+                "B1", scheduledTask,
+                LocalDateTime.of(2026, 11, 3, 9, 0),
+                LocalDateTime.of(2026, 11, 3, 10, 0)));
+        AvailabilityBlock availability = new AvailabilityBlock(
+                "A1",
+                LocalDateTime.of(2026, 11, 3, 9, 0),
+                LocalDateTime.of(2026, 11, 3, 10, 0),
+                AvailabilityType.AVAILABLE);
+
+        RecoveryPlan plan = agent.suggestRecovery(
+                2, partialSchedule,
+                List.of(scheduledTask, unscheduledTask),
+                List.of(availability));
+
+        assertEquals(2, plan.suggestions().size());
+        assertEquals(RecoveryAction.EXTEND_PLANNING_WINDOW,
+                plan.suggestions().get(0).action());
+        var context = new ObjectMapper().readTree(fakeClient.getUserPrompt());
+        assertEquals(2, context.path("workloadDeficitHours").asDouble(),
+                0.0001);
+        assertEquals("Interview preparation", context.path("openTasks")
+                .path(1).path("title").asText());
+        assertTrue(fakeClient.getSystemInstruction().contains(
+                "The user must choose"));
+    }
+
+    @Test
+    void rejectsUnknownOrDuplicateRecoveryActions() {
+        Schedule schedule = new Schedule(
+                "S1", LocalDate.of(2026, 11, 3),
+                LocalDate.of(2026, 11, 3));
+        PlanningAgent unknownActionAgent = new PlanningAgent(
+                new FakeLLMClient("""
+                        {"summary":"Not enough time","suggestions":[
+                        {"action":"DELETE_TASK",
+                        "explanation":"Remove the task"}]}
+                        """));
+        PlanningAgent duplicateActionAgent = new PlanningAgent(
+                new FakeLLMClient("""
+                        {"summary":"Not enough time","suggestions":[
+                        {"action":"ADD_AVAILABILITY","explanation":"Add time"},
+                        {"action":"ADD_AVAILABILITY","explanation":"Add more"}]}
+                        """));
+
+        assertThrows(LLMClientException.class,
+                () -> unknownActionAgent.suggestRecovery(
+                        1, schedule, List.of(), List.of()));
+        assertThrows(LLMClientException.class,
+                () -> duplicateActionAgent.suggestRecovery(
+                        1, schedule, List.of(), List.of()));
+    }
+
     private Task academicTask() {
         return new AcademicTask(
                 "T1", "Project", LocalDateTime.of(2026, 11, 10, 17, 0),

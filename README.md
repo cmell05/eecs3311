@@ -49,6 +49,11 @@ for review and explicitly create a task after the user confirms or edits it.
 of the current schedule, task priority factors, and availability. The explanation
 cannot modify or regenerate the deterministic schedule.
 
+After deterministic generation reports a `ScheduleInfeasibleException`,
+`requestRecoverySuggestions(...)` can produce a validated `RecoveryPlan`. Gemini
+may explain options such as extending the window or adding availability, but the
+user must choose and apply any change explicitly.
+
 ## Build and Test
 
 Use JDK 17 and Maven, then run:

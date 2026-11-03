@@ -2,6 +2,8 @@ package com.planpilot.controller;
 
 import com.planpilot.ai.PlanningAgent;
 import com.planpilot.ai.ParsedTaskData;
+import com.planpilot.ai.RecoveryAction;
+import com.planpilot.ai.RecoveryPlan;
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.AvailabilityType;
 import com.planpilot.domain.AcademicTask;
@@ -309,6 +311,46 @@ class PlanPilotControllerTest {
         assertSame(schedule, scheduleService.getCurrentSchedule());
         assertEquals(originalBlocks, schedule.getStudyBlocks());
         assertEquals(ScheduleStatus.CURRENT, schedule.getStatus());
+    }
+
+    @Test
+    void suggestsRecoveryWithoutApplyingChanges() {
+        CourseService courseService = new CourseService();
+        TaskService taskService = new TaskService(courseService);
+        AvailabilityService availabilityService = new AvailabilityService();
+        ProgressService progressService = new ProgressService();
+        ScheduleService scheduleService = new ScheduleService(
+                taskService, availabilityService,
+                new SchedulePlanner(task -> 1.0, new ConflictDetector()),
+                new UserPreferences(60, StudyPeriod.ANY, 0));
+        PlanningAgent planningAgent = new PlanningAgent(
+                (systemInstruction, userPrompt) -> """
+                        {"summary":"One hour cannot fit.","suggestions":[
+                        {"action":"EXTEND_PLANNING_WINDOW",
+                        "explanation":"Add another planning day."}]}
+                        """);
+        PlanPilotController aiController = new PlanPilotController(
+                courseService, taskService, availabilityService,
+                scheduleService, progressService, null, planningAgent);
+        Task task = task("T1", 2);
+        LocalDateTime originalDeadline = task.getDeadline();
+        aiController.addTask(task);
+        aiController.addAvailability(new AvailabilityBlock(
+                "A1", start, start.plusHours(1),
+                AvailabilityType.AVAILABLE));
+        ScheduleInfeasibleException infeasibility = assertThrows(
+                ScheduleInfeasibleException.class,
+                () -> aiController.generateSchedule(date, date));
+
+        RecoveryPlan recovery = aiController.requestRecoverySuggestions(
+                infeasibility);
+
+        assertEquals(RecoveryAction.EXTEND_PLANNING_WINDOW,
+                recovery.suggestions().get(0).action());
+        assertSame(infeasibility.getPartialSchedule(),
+                scheduleService.getCurrentSchedule());
+        assertEquals(originalDeadline, task.getDeadline());
+        assertEquals(2, task.getRemainingHours(), 0.0001);
     }
 
     private Task task(String id, double hours) {

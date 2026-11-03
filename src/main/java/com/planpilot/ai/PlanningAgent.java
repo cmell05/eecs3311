@@ -12,8 +12,9 @@ import com.planpilot.domain.Task;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
-import java.util.Locale;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.OptionalDouble;
 
@@ -88,6 +89,29 @@ public final class PlanningAgent {
         return response.trim();
     }
 
+    public RecoveryPlan suggestRecovery(
+            double workloadDeficitHours,
+            Schedule partialSchedule,
+            List<Task> openTasks,
+            List<AvailabilityBlock> availability) {
+        if (!Double.isFinite(workloadDeficitHours)
+                || workloadDeficitHours <= 0) {
+            throw new IllegalArgumentException(
+                    "Workload deficit must be a positive finite value.");
+        }
+        Objects.requireNonNull(partialSchedule,
+                "Partial schedule cannot be null.");
+        requireNonNullElements(openTasks, "Open tasks");
+        requireNonNullElements(availability, "Availability");
+
+        String response = llmClient.generateText(
+                recoverySystemInstruction(),
+                createRecoveryPrompt(
+                        workloadDeficitHours, partialSchedule,
+                        openTasks, availability));
+        return parseRecoveryPlan(response);
+    }
+
     private String taskParsingSystemInstruction() {
         return "Convert a task description into a proposed task. Use the "
                 + "provided reference time to resolve relative dates. Return "
@@ -122,19 +146,95 @@ public final class PlanningAgent {
                 + "regenerate the schedule. Keep the answer concise.";
     }
 
+    private String recoverySystemInstruction() {
+        return "Explain an infeasible study workload using only the supplied "
+                + "JSON facts and recommend 1 to 4 distinct recovery actions. "
+                + "Return exactly one JSON object with a nonblank summary and "
+                + "a suggestions array. Each suggestion must contain action "
+                + "and explanation. Allowed actions are "
+                + "EXTEND_PLANNING_WINDOW, ADD_AVAILABILITY, "
+                + "DEFER_LOWER_PRIORITY_TASK, and KEEP_CURRENT_CONSTRAINTS. "
+                + "Never claim to apply an action, change a deadline, delete "
+                + "work, or regenerate the schedule. The user must choose.";
+    }
+
+    private String createRecoveryPrompt(
+            double workloadDeficitHours,
+            Schedule partialSchedule,
+            List<Task> openTasks,
+            List<AvailabilityBlock> availability) {
+        ObjectNode root = objectMapper.createObjectNode();
+        root.put("workloadDeficitHours", workloadDeficitHours);
+        addScheduleContext(
+                root.putObject("partialSchedule"), partialSchedule);
+        var taskNodes = root.putArray("openTasks");
+        for (Task task : openTasks) {
+            addTaskContext(taskNodes.addObject(), task);
+        }
+        addAvailabilityContext(root, availability);
+        return writeJson(root, "recovery suggestion request");
+    }
+
+    private RecoveryPlan parseRecoveryPlan(String response) {
+        Objects.requireNonNull(response, "LLM response cannot be null.");
+        if (response.isBlank()) {
+            throw invalidRecoveryResponse(null);
+        }
+        try {
+            JsonNode root = objectMapper.readTree(response.trim());
+            if (root == null || !root.isObject()) {
+                throw invalidRecoveryResponse(null);
+            }
+            JsonNode summaryNode = root.path("summary");
+            JsonNode suggestionsNode = root.path("suggestions");
+            if (!summaryNode.isTextual()
+                    || summaryNode.asText().isBlank()
+                    || !suggestionsNode.isArray()) {
+                throw invalidRecoveryResponse(null);
+            }
+            List<RecoverySuggestion> suggestions = new ArrayList<>();
+            for (JsonNode suggestionNode : suggestionsNode) {
+                if (!suggestionNode.isObject()
+                        || !suggestionNode.path("action").isTextual()
+                        || !suggestionNode.path("explanation").isTextual()) {
+                    throw invalidRecoveryResponse(null);
+                }
+                RecoveryAction action = RecoveryAction.valueOf(
+                        suggestionNode.path("action").asText());
+                suggestions.add(new RecoverySuggestion(
+                        action,
+                        suggestionNode.path("explanation").asText()));
+            }
+            return new RecoveryPlan(summaryNode.asText(), suggestions);
+        } catch (JsonProcessingException | IllegalArgumentException exception) {
+            throw invalidRecoveryResponse(exception);
+        }
+    }
+
+    private LLMClientException invalidRecoveryResponse(Throwable cause) {
+        String message = "The LLM returned invalid recovery suggestions.";
+        return cause == null
+                ? new LLMClientException(message)
+                : new LLMClientException(message, cause);
+    }
+
     private String createScheduleExplanationPrompt(
             String question,
             Schedule schedule,
             List<AvailabilityBlock> availability) {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("question", question.trim());
-        ObjectNode scheduleNode = root.putObject("schedule");
-        scheduleNode.put("id", schedule.getId());
-        scheduleNode.put("startDate", schedule.getStartDate().toString());
-        scheduleNode.put("endDate", schedule.getEndDate().toString());
-        scheduleNode.put("status", schedule.getStatus().name());
+        addScheduleContext(root.putObject("schedule"), schedule);
+        addAvailabilityContext(root, availability);
+        return writeJson(root, "schedule explanation request");
+    }
 
-        var studyBlocks = scheduleNode.putArray("studyBlocks");
+    private void addScheduleContext(ObjectNode node, Schedule schedule) {
+        node.put("id", schedule.getId());
+        node.put("startDate", schedule.getStartDate().toString());
+        node.put("endDate", schedule.getEndDate().toString());
+        node.put("status", schedule.getStatus().name());
+        var studyBlocks = node.putArray("studyBlocks");
         for (StudyBlock block : schedule.getStudyBlocks()) {
             ObjectNode blockNode = studyBlocks.addObject();
             blockNode.put("id", block.getId());
@@ -145,7 +245,10 @@ public final class PlanningAgent {
                     block.getProgressStatus().name());
             addTaskContext(blockNode.putObject("task"), block.getTask());
         }
+    }
 
+    private void addAvailabilityContext(
+            ObjectNode root, List<AvailabilityBlock> availability) {
         var availabilityNodes = root.putArray("availability");
         for (AvailabilityBlock block : availability) {
             ObjectNode blockNode = availabilityNodes.addObject();
@@ -154,11 +257,14 @@ public final class PlanningAgent {
             blockNode.put("end", block.getEnd().toString());
             blockNode.put("type", block.getType().name());
         }
+    }
+
+    private String writeJson(ObjectNode root, String requestName) {
         try {
             return objectMapper.writeValueAsString(root);
         } catch (JsonProcessingException exception) {
             throw new LLMClientException(
-                    "Unable to create the schedule explanation request.",
+                    "Unable to create the " + requestName + ".",
                     exception);
         }
     }
@@ -267,5 +373,12 @@ public final class PlanningAgent {
         if (value.isBlank()) {
             throw new IllegalArgumentException(fieldName + " cannot be blank.");
         }
+    }
+
+    private <T> void requireNonNullElements(
+            List<T> values, String fieldName) {
+        Objects.requireNonNull(values, fieldName + " cannot be null.");
+        values.forEach(value -> Objects.requireNonNull(
+                value, fieldName + " cannot contain null values."));
     }
 }

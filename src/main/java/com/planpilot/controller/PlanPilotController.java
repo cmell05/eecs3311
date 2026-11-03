@@ -2,6 +2,7 @@ package com.planpilot.controller;
 
 import com.planpilot.ai.ParsedTaskData;
 import com.planpilot.ai.PlanningAgent;
+import com.planpilot.ai.RecoveryPlan;
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.Course;
 import com.planpilot.domain.ProgressRecord;
@@ -16,6 +17,7 @@ import com.planpilot.service.EffortEstimator;
 import com.planpilot.service.ProgressService;
 import com.planpilot.service.ReplanOption;
 import com.planpilot.service.ScheduleService;
+import com.planpilot.service.ScheduleInfeasibleException;
 import com.planpilot.service.TaskService;
 
 import java.time.LocalDate;
@@ -207,6 +209,26 @@ public class PlanPilotController {
         return planningAgent.explainSchedule(
                 question,
                 schedule,
+                availabilityService.getAvailability(windowStart, windowEnd));
+    }
+
+    public RecoveryPlan requestRecoverySuggestions(
+            ScheduleInfeasibleException infeasibility) {
+        Objects.requireNonNull(infeasibility,
+                "Schedule infeasibility cannot be null.");
+        if (planningAgent == null) {
+            throw new UnsupportedOperationException(
+                    "Workload recovery suggestions are not configured.");
+        }
+        Schedule partialSchedule = infeasibility.getPartialSchedule();
+        LocalDateTime windowStart = partialSchedule.getStartDate()
+                .atStartOfDay();
+        LocalDateTime windowEnd = partialSchedule.getEndDate()
+                .plusDays(1).atStartOfDay();
+        return planningAgent.suggestRecovery(
+                infeasibility.getWorkloadDeficitHours(),
+                partialSchedule,
+                taskService.getOpenTasks(),
                 availabilityService.getAvailability(windowStart, windowEnd));
     }
 
