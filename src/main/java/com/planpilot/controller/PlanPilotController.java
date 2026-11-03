@@ -1,5 +1,7 @@
 package com.planpilot.controller;
 
+import com.planpilot.ai.ParsedTaskData;
+import com.planpilot.ai.PlanningAgent;
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.Course;
 import com.planpilot.domain.ProgressRecord;
@@ -28,6 +30,7 @@ public class PlanPilotController {
     private final ScheduleService scheduleService;
     private final ProgressService progressService;
     private final EffortEstimator effortEstimator;
+    private final PlanningAgent planningAgent;
 
     public PlanPilotController(
             CourseService courseService,
@@ -36,7 +39,7 @@ public class PlanPilotController {
             ScheduleService scheduleService,
             ProgressService progressService) {
         this(courseService, taskService, availabilityService, scheduleService,
-                progressService, null);
+                progressService, null, null);
     }
 
     public PlanPilotController(
@@ -46,6 +49,18 @@ public class PlanPilotController {
             ScheduleService scheduleService,
             ProgressService progressService,
             EffortEstimator effortEstimator) {
+        this(courseService, taskService, availabilityService, scheduleService,
+                progressService, effortEstimator, null);
+    }
+
+    public PlanPilotController(
+            CourseService courseService,
+            TaskService taskService,
+            AvailabilityService availabilityService,
+            ScheduleService scheduleService,
+            ProgressService progressService,
+            EffortEstimator effortEstimator,
+            PlanningAgent planningAgent) {
         this.courseService = Objects.requireNonNull(
                 courseService, "Course service cannot be null.");
         this.taskService = Objects.requireNonNull(
@@ -57,6 +72,7 @@ public class PlanPilotController {
         this.progressService = Objects.requireNonNull(
                 progressService, "Progress service cannot be null.");
         this.effortEstimator = effortEstimator;
+        this.planningAgent = planningAgent;
     }
 
     public Course addCourse(Course courseData) {
@@ -169,10 +185,13 @@ public class PlanPilotController {
                 task, progressService.getHistory());
     }
 
-    public Task parseNaturalLanguageTask(String text) {
+    public ParsedTaskData parseNaturalLanguageTask(String text) {
         requireText(text, "Task description");
-        throw new UnsupportedOperationException(
-                "Natural-language task parsing is not available until AI integration is implemented.");
+        if (planningAgent == null) {
+            throw new UnsupportedOperationException(
+                    "Natural-language task parsing is not configured.");
+        }
+        return planningAgent.parseTask(text);
     }
 
     public String explainSchedule(String question) {

@@ -5,9 +5,13 @@ import com.planpilot.domain.AcademicTaskType;
 import com.planpilot.domain.Course;
 import com.planpilot.domain.PriorityLevel;
 import com.planpilot.domain.Task;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.OptionalDouble;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -63,6 +67,31 @@ class PlanningAgentTest {
         assertThrows(IllegalArgumentException.class,
                 () -> agent.suggestEffort(
                         academicTask(), OptionalDouble.of(2), 0));
+    }
+
+    @Test
+    void parsesNaturalLanguageUsingReferenceTimeAndFakeClient() {
+        FakeLLMClient fakeClient = new FakeLLMClient("""
+                {"title":"Interview preparation",
+                "deadline":"2026-11-05T14:00:00","estimatedHours":2,
+                "taskKind":"GENERAL"}
+                """);
+        Clock clock = Clock.fixed(
+                Instant.parse("2026-11-03T15:30:00Z"), ZoneOffset.UTC);
+        PlanningAgent agent = new PlanningAgent(
+                fakeClient, new ObjectMapper(), clock);
+
+        ParsedTaskData proposal = agent.parseTask(
+                "Prepare for interview next Thursday");
+
+        assertEquals("Interview preparation", proposal.title());
+        assertEquals(2, proposal.estimatedHours(), 0.0001);
+        assertTrue(fakeClient.getSystemInstruction().contains(
+                "provided reference time"));
+        assertTrue(fakeClient.getUserPrompt().contains(
+                "\"referenceDateTime\":\"2026-11-03T15:30\""));
+        assertTrue(fakeClient.getUserPrompt().contains(
+                "Prepare for interview next Thursday"));
     }
 
     private Task academicTask() {

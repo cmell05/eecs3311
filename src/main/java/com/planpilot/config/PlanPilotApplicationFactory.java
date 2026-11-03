@@ -38,20 +38,28 @@ public final class PlanPilotApplicationFactory {
                         StudyPeriod.ANY,
                         DEFAULT_BREAK_MINUTES),
                 publisher);
-        EffortEstimator effortEstimator = createEffortEstimator();
+        AiComponents aiComponents = createAiComponents();
         PlanPilotController controller = new PlanPilotController(
                 courseService, taskService, availabilityService,
-                scheduleService, progressService, effortEstimator);
+                scheduleService, progressService,
+                aiComponents.effortEstimator(), aiComponents.planningAgent());
         return new PlanPilotApplicationContext(controller, publisher);
     }
 
-    private static EffortEstimator createEffortEstimator() {
+    private static AiComponents createAiComponents() {
         try {
             GeminiLLMClient client = new GeminiLLMClient(
                     GeminiConfiguration.load());
-            return new EffortEstimator(new PlanningAgent(client));
+            PlanningAgent planningAgent = new PlanningAgent(client);
+            return new AiComponents(
+                    planningAgent, new EffortEstimator(planningAgent));
         } catch (IllegalStateException exception) {
-            return null;
+            return new AiComponents(null, null);
         }
+    }
+
+    private record AiComponents(
+            PlanningAgent planningAgent,
+            EffortEstimator effortEstimator) {
     }
 }

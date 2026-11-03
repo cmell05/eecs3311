@@ -3,9 +3,12 @@ package com.planpilot.ai;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.planpilot.domain.AcademicTask;
 import com.planpilot.domain.Task;
 
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.OptionalDouble;
@@ -15,16 +18,25 @@ public final class PlanningAgent {
 
     private final LLMClient llmClient;
     private final ObjectMapper objectMapper;
+    private final TaskParser taskParser;
+    private final Clock clock;
 
     public PlanningAgent(LLMClient llmClient) {
-        this(llmClient, new ObjectMapper());
+        this(llmClient, new ObjectMapper(), Clock.systemDefaultZone());
     }
 
     PlanningAgent(LLMClient llmClient, ObjectMapper objectMapper) {
+        this(llmClient, objectMapper, Clock.systemDefaultZone());
+    }
+
+    PlanningAgent(
+            LLMClient llmClient, ObjectMapper objectMapper, Clock clock) {
         this.llmClient = Objects.requireNonNull(
                 llmClient, "LLM client cannot be null.");
         this.objectMapper = Objects.requireNonNull(
                 objectMapper, "Object mapper cannot be null.");
+        this.taskParser = new TaskParser(objectMapper);
+        this.clock = Objects.requireNonNull(clock, "Clock cannot be null.");
     }
 
     public double suggestEffort(
@@ -42,6 +54,38 @@ public final class PlanningAgent {
                 systemInstruction(), createEffortPrompt(
                         task, historicalAverage, sampleCount));
         return parseSuggestedHours(response);
+    }
+
+    public ParsedTaskData parseTask(String text) {
+        requireText(text, "Task description");
+        String response = llmClient.generateText(
+                taskParsingSystemInstruction(), createTaskParsingPrompt(text));
+        return taskParser.parse(response);
+    }
+
+    private String taskParsingSystemInstruction() {
+        return "Convert a task description into a proposed task. Use the "
+                + "provided reference time to resolve relative dates. Return "
+                + "exactly one JSON object with required fields title, deadline "
+                + "(ISO local date-time), and estimatedHours. Optional fields: "
+                + "difficulty (1-5), importance (LOW, MEDIUM, HIGH), taskKind "
+                + "(ACADEMIC or GENERAL), courseCode, assessmentWeight (0-100), "
+                + "and academicTaskType (ASSIGNMENT, EXAM, QUIZ, PROJECT, "
+                + "READING, STUDY). Use null for unknown optional academic "
+                + "fields. General tasks must use null for all academic fields. "
+                + "Do not include Markdown or commentary.";
+    }
+
+    private String createTaskParsingPrompt(String text) {
+        ObjectNode prompt = objectMapper.createObjectNode();
+        prompt.put("referenceDateTime", LocalDateTime.now(clock).toString());
+        prompt.put("taskDescription", text.trim());
+        try {
+            return objectMapper.writeValueAsString(prompt);
+        } catch (JsonProcessingException exception) {
+            throw new LLMClientException(
+                    "Unable to create the task parsing request.", exception);
+        }
     }
 
     private String systemInstruction() {
@@ -119,5 +163,12 @@ public final class PlanningAgent {
 
     private String format(double value) {
         return String.format(Locale.ROOT, "%.2f", value);
+    }
+
+    private void requireText(String value, String fieldName) {
+        Objects.requireNonNull(value, fieldName + " cannot be null.");
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(fieldName + " cannot be blank.");
+        }
     }
 }

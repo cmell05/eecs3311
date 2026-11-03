@@ -41,6 +41,10 @@ When Gemini is configured, `PlanPilotController.requestEffortSuggestion(...)`
 combines completed similar-task history with an AI recommendation. It returns a
 suggestion only and never changes the task's user-selected estimate automatically.
 
+`PlanPilotController.parseNaturalLanguageTask(...)` converts free-form text into
+validated `ParsedTaskData`. The result is only a proposal: the caller must show it
+for review and explicitly create a task after the user confirms or edits it.
+
 ## Build and Test
 
 Use JDK 17 and Maven, then run:

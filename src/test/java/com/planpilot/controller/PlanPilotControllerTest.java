@@ -1,6 +1,7 @@
 package com.planpilot.controller;
 
 import com.planpilot.ai.PlanningAgent;
+import com.planpilot.ai.ParsedTaskData;
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.AvailabilityType;
 import com.planpilot.domain.AcademicTask;
@@ -244,6 +245,35 @@ class PlanPilotControllerTest {
 
         assertEquals(3.5, suggestion, 0.0001);
         assertEquals(2, task.getEstimatedHours(), 0.0001);
+    }
+
+    @Test
+    void delegatesNaturalLanguageParsingWithoutSavingProposal() {
+        CourseService courseService = new CourseService();
+        TaskService taskService = new TaskService(courseService);
+        AvailabilityService availabilityService = new AvailabilityService();
+        ProgressService progressService = new ProgressService();
+        SchedulePlanner schedulePlanner = new SchedulePlanner(
+                task -> 1.0, new ConflictDetector());
+        ScheduleService scheduleService = new ScheduleService(
+                taskService, availabilityService, schedulePlanner,
+                new UserPreferences(60, StudyPeriod.ANY, 0));
+        PlanningAgent planningAgent = new PlanningAgent(
+                (systemInstruction, userPrompt) -> """
+                        {"title":"Read chapter 4",
+                        "deadline":"2026-11-06T18:00:00",
+                        "estimatedHours":2,"taskKind":"GENERAL"}
+                        """);
+        PlanPilotController aiController = new PlanPilotController(
+                courseService, taskService, availabilityService,
+                scheduleService, progressService, null, planningAgent);
+
+        ParsedTaskData proposal = aiController.parseNaturalLanguageTask(
+                "Read chapter 4 by Friday at 6 PM");
+
+        assertEquals("Read chapter 4", proposal.title());
+        assertEquals(2, proposal.estimatedHours(), 0.0001);
+        assertEquals(List.of(), aiController.getTasks());
     }
 
     private Task task(String id, double hours) {
