@@ -253,7 +253,7 @@ public class PlanPilotCLI {
     }
 
     private void displayTaskProgress() {
-        controller.getOpenTasks().forEach(task -> knownTasks.putIfAbsent(task.getId(), task));
+        controller.getTasks().forEach(task -> knownTasks.putIfAbsent(task.getId(), task));
         if (knownTasks.isEmpty()) {
             output.println("No tasks have been added.");
             return;

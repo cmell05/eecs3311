@@ -2,6 +2,8 @@ package com.planpilot.controller;
 
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.AvailabilityType;
+import com.planpilot.domain.AcademicTask;
+import com.planpilot.domain.AcademicTaskType;
 import com.planpilot.domain.Course;
 import com.planpilot.domain.GeneralTask;
 import com.planpilot.domain.PriorityLevel;
@@ -66,6 +68,29 @@ class PlanPilotControllerTest {
         assertSame(task, controller.addTask(task));
         assertEquals(List.of(course), controller.getCourses());
         assertEquals(List.of(task), controller.getOpenTasks());
+        assertEquals(List.of(task), controller.getTasks());
+    }
+
+    @Test
+    void protectsAndSynchronizesReferencedCourses() {
+        Course original = controller.addCourse(
+                new Course("C1", "EECS3311", "Software Design"));
+        AcademicTask academicTask = new AcademicTask(
+                "T1", "Project", start.plusDays(2), 4, 4,
+                PriorityLevel.HIGH, original, 30, AcademicTaskType.PROJECT);
+        controller.addTask(academicTask);
+
+        assertThrows(IllegalStateException.class,
+                () -> controller.deleteCourse(original.getId()));
+
+        Course replacement = new Course(
+                "C1", "EECS3311", "Software Design Project");
+        controller.updateCourse(replacement);
+
+        assertSame(replacement, academicTask.getCourse());
+        controller.deleteTask(academicTask.getId());
+        controller.deleteCourse(original.getId());
+        assertEquals(List.of(), controller.getCourses());
     }
 
     @Test

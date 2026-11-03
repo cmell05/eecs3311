@@ -212,10 +212,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     }
 
     private Node createTasksPage() {
-        List<Task> tasks = controller.getOpenTasks();
+        List<Task> tasks = controller.getTasks();
         ListView<String> taskList = new ListView<>(FXCollections.observableArrayList(
                 tasks.stream().map(this::formatTask).toList()));
-        taskList.setPlaceholder(new Label("No open tasks."));
+        taskList.setPlaceholder(new Label("No tasks have been added."));
 
         ComboBox<String> kindField = new ComboBox<>(
                 FXCollections.observableArrayList("General", "Academic"));

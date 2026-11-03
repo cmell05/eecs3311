@@ -98,6 +98,20 @@ class TaskServiceTest {
         taskService.createTask(completedTask);
 
         assertEquals(List.of(openTask), taskService.getOpenTasks());
+        assertEquals(List.of(openTask, completedTask), taskService.getTasks());
+    }
+
+    @Test
+    void tracksCourseReferencesAcrossAllAcademicTasks() {
+        AcademicTask academicTask = academicTask("T1", course);
+        taskService.createTask(academicTask);
+        Course replacement = new Course(
+                course.getId(), "EECS3311", "Software Design Project");
+
+        taskService.updateCourseReferences(replacement);
+
+        assertTrue(taskService.hasTasksForCourse(course.getId()));
+        assertSame(replacement, academicTask.getCourse());
     }
 
     private AcademicTask academicTask(String id, Course taskCourse) {

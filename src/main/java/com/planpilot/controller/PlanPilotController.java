@@ -51,9 +51,14 @@ public class PlanPilotController {
 
     public void updateCourse(Course course) {
         courseService.updateCourse(course);
+        taskService.updateCourseReferences(course);
     }
 
     public void deleteCourse(String courseId) {
+        if (taskService.hasTasksForCourse(courseId)) {
+            throw new IllegalStateException(
+                    "Cannot delete a course while academic tasks reference it.");
+        }
         courseService.deleteCourse(courseId);
     }
 
@@ -79,6 +84,10 @@ public class PlanPilotController {
 
     public List<Task> getOpenTasks() {
         return taskService.getOpenTasks();
+    }
+
+    public List<Task> getTasks() {
+        return taskService.getTasks();
     }
 
     public void addAvailability(AvailabilityBlock block) {

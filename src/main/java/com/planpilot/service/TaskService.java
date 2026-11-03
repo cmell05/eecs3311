@@ -1,6 +1,7 @@
 package com.planpilot.service;
 
 import com.planpilot.domain.AcademicTask;
+import com.planpilot.domain.Course;
 import com.planpilot.domain.Task;
 import com.planpilot.event.PlanningEventPublisher;
 
@@ -55,6 +56,27 @@ public class TaskService {
         return tasks.values().stream()
                 .filter(task -> task.getRemainingHours() > 0)
                 .toList();
+    }
+
+    public List<Task> getTasks() {
+        return List.copyOf(tasks.values());
+    }
+
+    public boolean hasTasksForCourse(String courseId) {
+        requireText(courseId, "Course id");
+        return tasks.values().stream()
+                .filter(AcademicTask.class::isInstance)
+                .map(AcademicTask.class::cast)
+                .anyMatch(task -> task.getCourse().getId().equals(courseId));
+    }
+
+    public void updateCourseReferences(Course course) {
+        Objects.requireNonNull(course, "Course cannot be null.");
+        tasks.values().stream()
+                .filter(AcademicTask.class::isInstance)
+                .map(AcademicTask.class::cast)
+                .filter(task -> task.getCourse().getId().equals(course.getId()))
+                .forEach(task -> task.setCourse(course));
     }
 
     private void validateTask(Task task) {
