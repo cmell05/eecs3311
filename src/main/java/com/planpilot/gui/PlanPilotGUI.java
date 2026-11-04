@@ -43,18 +43,21 @@ import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
+import javafx.util.StringConverter;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 public class PlanPilotGUI extends Application implements PlanningObserver {
@@ -71,6 +74,8 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private boolean scheduleGenerationInProgress;
     private ScheduleInfeasibleException lastInfeasibility;
     private ReplanRecommendation pendingReplanRecommendation;
+    private final java.util.Map<Page, Button> navigationButtons =
+            new java.util.EnumMap<>(Page.class);
 
     public static void main(String[] args) {
         launch(args);
@@ -85,14 +90,21 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         eventPublisher.subscribe(this);
 
         root = new BorderPane();
+        root.getStyleClass().add("app-root");
         root.setLeft(createNavigation());
         statusLabel = new Label("Ready");
-        statusLabel.setPadding(new Insets(8, 12, 8, 12));
+        statusLabel.setPadding(new Insets(12, 20, 12, 20));
+        statusLabel.getStyleClass().add("status-bar");
         root.setBottom(statusLabel);
         showPage(Page.COURSES);
 
         stage.setTitle("PlanPilot");
-        stage.setScene(new Scene(root, 1080, 700));
+        Scene scene = new Scene(root, 1180, 780);
+        var stylesheet = getClass().getResource("/com/planpilot/gui/planpilot.css");
+        if (stylesheet != null) {
+            scene.getStylesheets().add(stylesheet.toExternalForm());
+        }
+        stage.setScene(scene);
         stage.setMinWidth(860);
         stage.setMinHeight(560);
         stage.show();
@@ -127,17 +139,23 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
     private VBox createNavigation() {
         Label title = new Label("PlanPilot");
-        title.setStyle("-fx-font-size: 22px; -fx-font-weight: bold;");
+        title.getStyleClass().add("brand-title");
 
         VBox navigation = new VBox(8, title);
         navigation.setPadding(new Insets(20));
-        navigation.setPrefWidth(190);
-        navigation.setStyle("-fx-background-color: #eef2f7;");
+        navigation.setPrefWidth(220);
+        navigation.getStyleClass().add("sidebar");
+        Label tagline = new Label("Your study workspace");
+        tagline.getStyleClass().add("sidebar-caption");
+        navigation.getChildren().add(tagline);
         for (Page page : Page.values()) {
             Button button = new Button(page.label);
             button.setMaxWidth(Double.MAX_VALUE);
             button.setAlignment(Pos.CENTER_LEFT);
+            button.getStyleClass().add("nav-button");
+            button.setTooltip(new Tooltip("Open " + page.label));
             button.setOnAction(event -> showPage(page));
+            navigationButtons.put(page, button);
             navigation.getChildren().add(button);
         }
         return navigation;
@@ -145,6 +163,12 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
     private void showPage(Page page) {
         currentPage = page;
+        navigationButtons.forEach((item, button) -> {
+            button.getStyleClass().remove("nav-button-active");
+            if (item == page) {
+                button.getStyleClass().add("nav-button-active");
+            }
+        });
         root.setCenter(switch (page) {
             case COURSES -> createCoursesPage();
             case TASKS -> createTasksPage();
@@ -160,22 +184,18 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         List<Course> courses = controller.getCourses();
         ListView<String> courseList = new ListView<>(FXCollections.observableArrayList(
                 courses.stream()
-                        .map(course -> course.getId() + " | " + course.getCode()
-                                + " | " + course.getName())
+                        .map(course -> course.getCode() + "  ·  " + course.getName())
                         .toList()));
         courseList.setPlaceholder(new Label("No courses added yet."));
 
-        TextField idField = new TextField();
         TextField codeField = new TextField();
         TextField nameField = new TextField();
         GridPane form = createFormGrid();
-        addFormRow(form, 0, "Course ID", idField);
-        addFormRow(form, 1, "Code", codeField);
-        addFormRow(form, 2, "Name", nameField);
+        addFormRow(form, 0, "Course code", codeField);
+        addFormRow(form, 1, "Course name", nameField);
         Button addButton = new Button("Add Course");
         addButton.setOnAction(event -> executeAction("Course added", () ->
                 controller.addCourse(new Course(
-                        required(idField, "Course ID"),
                         required(codeField, "Course code"),
                         required(nameField, "Course name")))));
 
@@ -191,8 +211,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         return;
                     }
                     Course selected = courses.get(index);
-                    idField.setText(selected.getId());
-                    idField.setDisable(true);
                     codeField.setText(selected.getCode());
                     nameField.setText(selected.getName());
                     updateButton.setDisable(false);
@@ -225,7 +243,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         ComboBox<String> kindField = new ComboBox<>(
                 FXCollections.observableArrayList("General", "Academic"));
         kindField.setValue("General");
-        TextField idField = new TextField();
         TextField titleField = new TextField();
         DatePicker deadlineDate = new DatePicker(LocalDate.now());
         TextField deadlineTime = new TextField("17:00");
@@ -236,8 +253,9 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         ComboBox<PriorityLevel> importanceField = new ComboBox<>(
                 FXCollections.observableArrayList(PriorityLevel.values()));
         importanceField.setValue(PriorityLevel.MEDIUM);
-        ComboBox<String> courseField = new ComboBox<>(FXCollections.observableArrayList(
-                controller.getCourses().stream().map(Course::getId).toList()));
+        ComboBox<Course> courseField = new ComboBox<>(FXCollections.observableArrayList(
+                controller.getCourses()));
+        courseField.setConverter(courseConverter());
         TextField weightField = new TextField();
         ComboBox<AcademicTaskType> academicTypeField = new ComboBox<>(
                 FXCollections.observableArrayList(AcademicTaskType.values()));
@@ -254,40 +272,43 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
         GridPane form = createFormGrid();
         addFormRow(form, 0, "Task kind", kindField);
-        addFormRow(form, 1, "Task ID", idField);
-        addFormRow(form, 2, "Title", titleField);
-        addFormRow(form, 3, "Deadline date", deadlineDate);
-        addFormRow(form, 4, "Deadline time", deadlineTime);
-        addFormRow(form, 5, "Estimated hours", effortField);
-        addFormRow(form, 6, "Difficulty", difficultyField);
-        addFormRow(form, 7, "Importance", importanceField);
-        addFormRow(form, 8, "Course ID", courseField);
-        addFormRow(form, 9, "Assessment weight", weightField);
-        addFormRow(form, 10, "Academic type", academicTypeField);
+        addFormRow(form, 1, "Task title", titleField);
+        addFormRow(form, 2, "Due date", deadlineDate);
+        addFormRow(form, 3, "Due time", deadlineTime);
+        addFormRow(form, 4, "Estimated hours", effortField);
+        addFormRow(form, 5, "Difficulty (1–5)", difficultyField);
+        addFormRow(form, 6, "Importance", importanceField);
+        addFormRow(form, 7, "Course", courseField);
+        addFormRow(form, 8, "Assessment weight (%)", weightField);
+        addFormRow(form, 9, "Academic type", academicTypeField);
 
-        Supplier<Task> taskFromForm = () -> {
+        Function<String, Task> taskFromForm = id -> {
             LocalDateTime deadline = combineDateAndTime(
                     deadlineDate, deadlineTime, "Deadline");
             double effort = positiveDouble(effortField, "Estimated hours");
             if ("Academic".equals(kindField.getValue())) {
-                return new AcademicTask(
-                        required(idField, "Task ID"),
-                        required(titleField, "Task title"),
-                        deadline,
-                        effort,
-                        requiredValue(difficultyField.getValue(), "Difficulty"),
-                        requiredValue(importanceField.getValue(), "Importance"),
-                        findCourse(courseField.getValue()),
-                        nonNegativeDouble(weightField, "Assessment weight"),
-                        requiredValue(academicTypeField.getValue(), "Academic type"));
+                Course course = requiredValue(courseField.getValue(), "Course");
+                return id == null
+                        ? new AcademicTask(
+                                required(titleField, "Task title"), deadline,
+                                effort, requiredValue(difficultyField.getValue(), "Difficulty"),
+                                requiredValue(importanceField.getValue(), "Importance"),
+                                course, nonNegativeDouble(weightField, "Assessment weight"),
+                                requiredValue(academicTypeField.getValue(), "Academic type"))
+                        : new AcademicTask(
+                                id, required(titleField, "Task title"), deadline,
+                                effort, requiredValue(difficultyField.getValue(), "Difficulty"),
+                                requiredValue(importanceField.getValue(), "Importance"),
+                                course, nonNegativeDouble(weightField, "Assessment weight"),
+                                requiredValue(academicTypeField.getValue(), "Academic type"));
             }
-            return new GeneralTask(
-                    required(idField, "Task ID"),
-                    required(titleField, "Task title"),
-                    deadline,
-                    effort,
-                    requiredValue(difficultyField.getValue(), "Difficulty"),
-                    requiredValue(importanceField.getValue(), "Importance"));
+            return id == null
+                    ? new GeneralTask(required(titleField, "Task title"), deadline,
+                            effort, requiredValue(difficultyField.getValue(), "Difficulty"),
+                            requiredValue(importanceField.getValue(), "Importance"))
+                    : new GeneralTask(id, required(titleField, "Task title"), deadline,
+                            effort, requiredValue(difficultyField.getValue(), "Difficulty"),
+                            requiredValue(importanceField.getValue(), "Importance"));
         };
 
         Button addButton = new Button("Add Task");
@@ -297,7 +318,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         updateButton.setDisable(true);
         deleteButton.setDisable(true);
         addButton.setOnAction(event -> executeAction(
-                "Task added", () -> controller.addTask(taskFromForm.get())));
+                "Task added", () -> controller.addTask(taskFromForm.apply(null))));
         taskList.getSelectionModel().selectedIndexProperty().addListener(
                 (observable, oldIndex, newIndex) -> {
                     int index = newIndex.intValue();
@@ -305,8 +326,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         return;
                     }
                     Task selected = tasks.get(index);
-                    idField.setText(selected.getId());
-                    idField.setDisable(true);
                     titleField.setText(selected.getTitle());
                     deadlineDate.setValue(selected.getDeadline().toLocalDate());
                     deadlineTime.setText(selected.getDeadline().toLocalTime().toString());
@@ -315,7 +334,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                     importanceField.setValue(selected.getUserImportance());
                     if (selected instanceof AcademicTask academicTask) {
                         kindField.setValue("Academic");
-                        courseField.setValue(academicTask.getCourse().getId());
+                        courseField.setValue(academicTask.getCourse());
                         weightField.setText(Double.toString(
                                 academicTask.getAssessmentWeight()));
                         academicTypeField.setValue(academicTask.getTaskType());
@@ -330,7 +349,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 });
         updateButton.setOnAction(event -> executeAction("Task updated", () -> {
             Task selected = selectedItem(taskList, tasks, "task");
-            Task updated = taskFromForm.get();
+            Task updated = taskFromForm.apply(selected.getId());
             updated.setCompletedHours(selected.getCompletedHours());
             if (selected.getStatus() == TaskStatus.SKIPPED) {
                 updated.markSkipped();
@@ -355,7 +374,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 "Example: OS assignment due next Tuesday, worth 10%, about four hours");
         taskDescription.setPrefRowCount(2);
 
-        TextField proposalId = new TextField();
         TextField proposalTitle = new TextField();
         DatePicker proposalDate = new DatePicker();
         TextField proposalTime = new TextField("17:00");
@@ -366,11 +384,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 FXCollections.observableArrayList(PriorityLevel.values()));
         ComboBox<ParsedTaskKind> proposalKind = new ComboBox<>(
                 FXCollections.observableArrayList(ParsedTaskKind.values()));
-        ComboBox<String> proposalCourse = new ComboBox<>(
+        ComboBox<Course> proposalCourse = new ComboBox<>(
                 FXCollections.observableArrayList(
-                        controller.getCourses().stream()
-                                .map(Course::getId).toList()));
-        proposalCourse.setEditable(true);
+                        controller.getCourses()));
+        proposalCourse.setConverter(courseConverter());
         TextField proposalWeight = new TextField();
         ComboBox<AcademicTaskType> proposalType = new ComboBox<>(
                 FXCollections.observableArrayList(AcademicTaskType.values()));
@@ -390,17 +407,16 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         updateProposalAcademicFields.run();
 
         GridPane proposalForm = createFormGrid();
-        addFormRow(proposalForm, 0, "Task ID", proposalId);
-        addFormRow(proposalForm, 1, "Title", proposalTitle);
-        addFormRow(proposalForm, 2, "Deadline date", proposalDate);
-        addFormRow(proposalForm, 3, "Deadline time", proposalTime);
-        addFormRow(proposalForm, 4, "Estimated hours", proposalEffort);
-        addFormRow(proposalForm, 5, "Difficulty", proposalDifficulty);
-        addFormRow(proposalForm, 6, "Importance", proposalImportance);
-        addFormRow(proposalForm, 7, "Task kind", proposalKind);
-        addFormRow(proposalForm, 8, "Course ID/code", proposalCourse);
-        addFormRow(proposalForm, 9, "Assessment weight", proposalWeight);
-        addFormRow(proposalForm, 10, "Academic type", proposalType);
+        addFormRow(proposalForm, 0, "Task title", proposalTitle);
+        addFormRow(proposalForm, 1, "Due date", proposalDate);
+        addFormRow(proposalForm, 2, "Due time", proposalTime);
+        addFormRow(proposalForm, 3, "Estimated hours", proposalEffort);
+        addFormRow(proposalForm, 4, "Difficulty (1–5)", proposalDifficulty);
+        addFormRow(proposalForm, 5, "Importance", proposalImportance);
+        addFormRow(proposalForm, 6, "Task type", proposalKind);
+        addFormRow(proposalForm, 7, "Course", proposalCourse);
+        addFormRow(proposalForm, 8, "Assessment weight (%)", proposalWeight);
+        addFormRow(proposalForm, 9, "Academic type", proposalType);
 
         Button saveProposalButton = new Button("Confirm and Add Task");
         saveProposalButton.setDisable(true);
@@ -432,7 +448,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         saveProposalButton.setOnAction(event -> executeAction(
                 "Confirmed task added", () -> controller.addTask(
                         taskFromProposalForm(
-                                proposalId, proposalTitle, proposalDate,
+                                proposalTitle, proposalDate,
                                 proposalTime, proposalEffort,
                                 proposalDifficulty, proposalImportance,
                                 proposalKind, proposalCourse,
@@ -444,9 +460,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 parseTaskButton, saveProposalButton);
         taskParsingPanel.setMaxWidth(Double.MAX_VALUE);
 
-        ComboBox<String> effortTask = new ComboBox<>(
+        ComboBox<Task> effortTask = new ComboBox<>(
                 FXCollections.observableArrayList(
-                        controller.getTasks().stream().map(Task::getId).toList()));
+                        controller.getTasks()));
+        effortTask.setConverter(taskConverter());
         TextField suggestedEffort = new TextField();
         suggestedEffort.setPromptText("Suggested hours appear here");
         Button suggestEffortButton = new Button("Suggest Effort");
@@ -455,7 +472,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         suggestEffortButton.setDisable(effortTask.getItems().isEmpty());
         suggestEffortButton.setOnAction(event -> {
             try {
-                Task selected = findTask(effortTask.getValue());
+                Task selected = requiredValue(effortTask.getValue(), "Task");
                 runAiAction(
                         suggestEffortButton,
                         "Requesting effort suggestion...",
@@ -472,14 +489,14 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         });
         applyEffortButton.setOnAction(event -> executeAction(
                 "Task estimate updated by user confirmation", () -> {
-                    Task selected = findTask(effortTask.getValue());
+                    Task selected = requiredValue(effortTask.getValue(), "Task");
                     double hours = positiveDouble(
                             suggestedEffort, "Reviewed estimate");
                     selected.setEstimatedHours(hours);
                     controller.updateTask(selected);
                 }));
         GridPane effortForm = createFormGrid();
-        addFormRow(effortForm, 0, "Task ID", effortTask);
+        addFormRow(effortForm, 0, "Task", effortTask);
         addFormRow(effortForm, 1, "Reviewed estimate", suggestedEffort);
         VBox effortPanel = createEditor(
                 "Adaptive Effort Suggestion", effortForm,
@@ -575,12 +592,11 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 LocalDateTime.MIN, LocalDateTime.MAX);
         ListView<String> availabilityList = new ListView<>(
                 FXCollections.observableArrayList(entries.stream()
-                        .map(block -> block.getId() + " | " + block.getType()
-                                + " | " + block.getStart() + " to " + block.getEnd())
+                        .map(block -> block.getType() + "  ·  " + block.getStart()
+                                + " to " + block.getEnd())
                         .toList()));
         availabilityList.setPlaceholder(new Label("No availability entries added yet."));
 
-        TextField idField = new TextField();
         DatePicker dateField = new DatePicker(LocalDate.now());
         TextField startTimeField = new TextField("09:00");
         TextField endTimeField = new TextField("10:00");
@@ -589,17 +605,15 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         typeField.setValue(AvailabilityType.AVAILABLE);
 
         GridPane form = createFormGrid();
-        addFormRow(form, 0, "Entry ID", idField);
-        addFormRow(form, 1, "Date", dateField);
-        addFormRow(form, 2, "Start time", startTimeField);
-        addFormRow(form, 3, "End time", endTimeField);
-        addFormRow(form, 4, "Type", typeField);
+        addFormRow(form, 0, "Date", dateField);
+        addFormRow(form, 1, "Start time", startTimeField);
+        addFormRow(form, 2, "End time", endTimeField);
+        addFormRow(form, 3, "Entry type", typeField);
 
         Button addButton = new Button("Add Availability");
         addButton.setOnAction(event -> executeAction("Availability added", () -> {
             LocalDate date = requiredValue(dateField.getValue(), "Date");
             controller.addAvailability(new AvailabilityBlock(
-                    required(idField, "Entry ID"),
                     LocalDateTime.of(date, parseTime(startTimeField, "Start time")),
                     LocalDateTime.of(date, parseTime(endTimeField, "End time")),
                     requiredValue(typeField.getValue(), "Availability type")));
@@ -617,8 +631,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         return;
                     }
                     AvailabilityBlock selected = entries.get(index);
-                    idField.setText(selected.getId());
-                    idField.setDisable(true);
                     dateField.setValue(selected.getStart().toLocalDate());
                     startTimeField.setText(selected.getStart().toLocalTime().toString());
                     endTimeField.setText(selected.getEnd().toLocalTime().toString());
@@ -956,8 +968,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private String formatProgressRecord(ProgressRecord record) {
         return record.getRecordedAt() + " | " + record.getStatus()
                 + " | " + String.format(
-                        "%.2fh", record.getCompletedHours())
-                + " | block " + record.getStudyBlock().getId();
+                        "%.2fh", record.getCompletedHours());
     }
 
     private Node createManagementPage(
@@ -974,8 +985,14 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         Label heading = new Label(title);
         heading.setStyle("-fx-font-size: 16px; -fx-font-weight: bold;");
         HBox actionBar = new HBox(8, actions);
+        if (actionBar.getChildren().size() > 0
+                && actionBar.getChildren().get(0) instanceof Button primary) {
+            primary.getStyleClass().add("primary-action");
+        }
         VBox editor = new VBox(12, heading, new Separator(), form, actionBar);
         editor.setPrefWidth(380);
+        editor.getStyleClass().add("panel");
+        actionBar.getStyleClass().add("action-bar");
         return editor;
     }
 
@@ -983,11 +1000,14 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         GridPane form = new GridPane();
         form.setHgap(10);
         form.setVgap(8);
+        form.getStyleClass().add("form-grid");
         return form;
     }
 
     private void addFormRow(GridPane form, int row, String label, Node field) {
-        form.add(new Label(label + ":"), 0, row);
+        Label fieldLabel = new Label(label + ":");
+        fieldLabel.getStyleClass().add("field-label");
+        form.add(fieldLabel, 0, row);
         form.add(field, 1, row);
         GridPane.setHgrow(field, Priority.ALWAYS);
         if (field instanceof TextField textField) {
@@ -995,14 +1015,19 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         }
     }
 
-    private VBox createPage(String title, String description, Node content) {
+    private Node createPage(String title, String description, Node content) {
         Label heading = new Label(title);
-        heading.setStyle("-fx-font-size: 24px; -fx-font-weight: bold;");
+        heading.getStyleClass().add("page-title");
         Label subtitle = new Label(description);
-        VBox page = new VBox(12, heading, subtitle, content);
-        page.setPadding(new Insets(24));
+        subtitle.getStyleClass().add("page-subtitle");
+        VBox page = new VBox(18, heading, subtitle, content);
+        page.setPadding(new Insets(28, 32, 32, 32));
+        page.getStyleClass().add("page-content");
         VBox.setVgrow(content, Priority.ALWAYS);
-        return page;
+        ScrollPane scroll = new ScrollPane(page);
+        scroll.setFitToWidth(true);
+        scroll.getStyleClass().add("page-scroll");
+        return scroll;
     }
 
     private void executeAction(String successMessage, Runnable action) {
@@ -1050,7 +1075,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             ComboBox<Integer> difficultyField,
             ComboBox<PriorityLevel> importanceField,
             ComboBox<ParsedTaskKind> kindField,
-            ComboBox<String> courseField,
+            ComboBox<Course> courseField,
             TextField weightField,
             ComboBox<AcademicTaskType> typeField) {
         titleField.setText(proposal.title());
@@ -1062,7 +1087,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         kindField.setValue(proposal.taskKind());
         if (proposal.courseCode() == null) {
             courseField.setValue(null);
-            courseField.getEditor().clear();
         } else {
             Course matchingCourse = controller.getCourses().stream()
                     .filter(course -> course.getId().equalsIgnoreCase(
@@ -1071,12 +1095,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                                     proposal.courseCode()))
                     .findFirst()
                     .orElse(null);
-            if (matchingCourse == null) {
-                courseField.setValue(null);
-                courseField.getEditor().setText(proposal.courseCode());
-            } else {
-                courseField.setValue(matchingCourse.getId());
-            }
+            courseField.setValue(matchingCourse);
         }
         weightField.setText(proposal.assessmentWeight() == null
                 ? "" : proposal.assessmentWeight().toString());
@@ -1084,7 +1103,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     }
 
     private Task taskFromProposalForm(
-            TextField idField,
             TextField titleField,
             DatePicker deadlineDate,
             TextField deadlineTime,
@@ -1092,10 +1110,9 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             ComboBox<Integer> difficultyField,
             ComboBox<PriorityLevel> importanceField,
             ComboBox<ParsedTaskKind> kindField,
-            ComboBox<String> courseField,
+            ComboBox<Course> courseField,
             TextField weightField,
             ComboBox<AcademicTaskType> typeField) {
-        String id = required(idField, "Task ID");
         String title = required(titleField, "Task title");
         LocalDateTime deadline = combineDateAndTime(
                 deadlineDate, deadlineTime, "Deadline");
@@ -1107,22 +1124,13 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         ParsedTaskKind kind = requiredValue(
                 kindField.getValue(), "Task kind");
         if (kind == ParsedTaskKind.GENERAL) {
-            return new GeneralTask(
-                    id, title, deadline, effort, difficulty, importance);
+            return new GeneralTask(title, deadline, effort, difficulty, importance);
         }
         return new AcademicTask(
-                id, title, deadline, effort, difficulty, importance,
-                findCourseByIdOrCode(comboText(courseField)),
+                title, deadline, effort, difficulty, importance,
+                requiredValue(courseField.getValue(), "Course"),
                 nonNegativeDouble(weightField, "Assessment weight"),
                 requiredValue(typeField.getValue(), "Academic type"));
-    }
-
-    private String comboText(ComboBox<String> comboBox) {
-        String editorText = comboBox.getEditor().getText();
-        if (editorText != null && !editorText.isBlank()) {
-            return editorText.trim();
-        }
-        return comboBox.getValue();
     }
 
     static String formatRecoveryPlan(RecoveryPlan recovery) {
@@ -1156,7 +1164,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private void showError(String message) {
         Alert alert = new Alert(Alert.AlertType.ERROR);
         alert.setTitle("PlanPilot Error");
-        alert.setHeaderText("Unable to save");
+        alert.setHeaderText("Please check your input");
         alert.setContentText(message);
         alert.showAndWait();
         statusLabel.setText("Error: " + message);
@@ -1166,44 +1174,55 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         String prefix = task instanceof AcademicTask academicTask
                 ? academicTask.getCourse().getCode() + " | "
                 : "General | ";
-        return task.getId() + " | " + prefix + task.getTitle()
+        return prefix + task.getTitle()
                 + " | " + task.getStatus()
                 + " | " + task.getRemainingHours() + "h remaining";
     }
 
-    private Course findCourse(String courseId) {
-        if (courseId == null || courseId.isBlank()) {
-            throw new IllegalArgumentException("Course ID is required.");
-        }
-        return controller.getCourses().stream()
-                .filter(course -> course.getId().equals(courseId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No course exists with ID " + courseId + "."));
+    private String courseLabel(Course course) {
+        return course == null ? "" : course.getCode() + " — " + course.getName();
     }
 
-    private Course findCourseByIdOrCode(String value) {
-        if (value == null || value.isBlank()) {
-            throw new IllegalArgumentException(
-                    "Course ID or code is required.");
+    private String taskLabel(Task task) {
+        if (task == null) {
+            return "";
         }
-        return controller.getCourses().stream()
-                .filter(course -> course.getId().equalsIgnoreCase(value)
-                        || course.getCode().equalsIgnoreCase(value))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No course exists with ID or code " + value + "."));
+        String course = task instanceof AcademicTask academic
+                ? academic.getCourse().getCode() + " · " : "";
+        return course + task.getTitle() + " (" + task.getRemainingHours()
+                + "h remaining)";
     }
 
-    private Task findTask(String taskId) {
-        if (taskId == null || taskId.isBlank()) {
-            throw new IllegalArgumentException("Select a task first.");
-        }
-        return controller.getTasks().stream()
-                .filter(task -> task.getId().equals(taskId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No task exists with ID " + taskId + "."));
+    private StringConverter<Course> courseConverter() {
+        return new StringConverter<>() {
+            @Override
+            public String toString(Course course) {
+                return courseLabel(course);
+            }
+
+            @Override
+            public Course fromString(String value) {
+                return controller.getCourses().stream()
+                        .filter(course -> courseLabel(course).equals(value))
+                        .findFirst().orElse(null);
+            }
+        };
+    }
+
+    private StringConverter<Task> taskConverter() {
+        return new StringConverter<>() {
+            @Override
+            public String toString(Task task) {
+                return taskLabel(task);
+            }
+
+            @Override
+            public Task fromString(String value) {
+                return controller.getTasks().stream()
+                        .filter(task -> taskLabel(task).equals(value))
+                        .findFirst().orElse(null);
+            }
+        };
     }
 
     private LocalDateTime combineDateAndTime(

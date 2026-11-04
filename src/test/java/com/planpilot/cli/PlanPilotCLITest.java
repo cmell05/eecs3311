@@ -39,13 +39,13 @@ class PlanPilotCLITest {
     @Test
     void addsAndListsCourseThroughMenu() {
         String input = String.join("\n",
-                "2", "C1", "EECS3311", "Software Design",
+                "2", "EECS3311", "Software Design",
                 "1", "0") + "\n";
 
         String output = runCli(input);
 
         assertTrue(output.contains("Course added."));
-        assertTrue(output.contains("C1: EECS3311 - Software Design"));
+        assertTrue(output.contains("EECS3311 — Software Design"));
     }
 
     @Test
@@ -59,7 +59,7 @@ class PlanPilotCLITest {
     @Test
     void invalidInputReportsErrorAndReturnsToMenu() {
         String input = String.join("\n",
-                "5", "A1", "not-a-date", "2026-10-28T10:00", "AVAILABLE",
+                "5", "not-a-date", "2026-10-28T10:00", "AVAILABLE",
                 "0") + "\n";
 
         String output = assertDoesNotThrow(() -> runCli(input));
@@ -78,13 +78,13 @@ class PlanPilotCLITest {
                 """);
         String input = String.join("\n",
                 "10", "Prepare my portfolio by next Tuesday",
-                "accept", "T1", "3", "0") + "\n";
+                "accept", "3", "0") + "\n";
 
         String output = runCli(input, controller);
 
         assertTrue(output.contains("AI task proposal (not yet saved)"));
         assertTrue(output.contains("Proposed task confirmed and added."));
-        assertTrue(output.contains("T1 | Prepare portfolio"));
+        assertTrue(output.contains("Prepare portfolio"));
         assertEquals(1, controller.getTasks().size());
     }
 
@@ -111,7 +111,7 @@ class PlanPilotCLITest {
         controller.addTask(generalTask("T1", 2));
 
         String output = runCli(String.join("\n",
-                "11", "T1", "3.25", "0") + "\n", controller);
+                "11", "1", "3.25", "0") + "\n", controller);
 
         assertTrue(output.contains("AI suggested estimate: 3.50 hours"));
         assertTrue(output.contains("updated by user confirmation"));

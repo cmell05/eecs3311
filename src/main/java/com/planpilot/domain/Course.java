@@ -1,11 +1,16 @@
 package com.planpilot.domain;
 
 import java.util.Objects;
+import java.util.UUID;
 
 public class Course {
     private final String id;
     private String code;
     private String name;
+
+    public Course(String code, String name) {
+        this(UUID.randomUUID().toString(), code, name);
+    }
 
     public Course(String id, String code, String name) {
         this.id = requireText(id, "Course id");

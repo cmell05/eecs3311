@@ -114,13 +114,11 @@ public class PlanPilotCLI {
         }
         output.println("Courses:");
         courses.forEach(course -> output.printf(
-                "- %s: %s - %s%n",
-                course.getId(), course.getCode(), course.getName()));
+                "- %s — %s%n", course.getCode(), course.getName()));
     }
 
     private void addCourse() {
         Course course = new Course(
-                prompt("Course ID: "),
                 prompt("Course code: "),
                 prompt("Course name: "));
         controller.addCourse(course);
@@ -129,7 +127,6 @@ public class PlanPilotCLI {
 
     private void addTask() {
         String kind = prompt("Task kind (general/academic): ").toLowerCase(Locale.ROOT);
-        String id = prompt("Task ID: ");
         String title = prompt("Title: ");
         LocalDateTime deadline = LocalDateTime.parse(
                 prompt("Deadline (YYYY-MM-DDTHH:MM): "));
@@ -140,17 +137,17 @@ public class PlanPilotCLI {
 
         Task task;
         if (kind.equals("academic")) {
-            Course course = findCourse(prompt("Course ID: "));
+            Course course = chooseCourse();
             double weight = Double.parseDouble(prompt("Assessment weight (0-100): "));
             AcademicTaskType taskType = parseEnum(
                     AcademicTaskType.class,
                     prompt("Type (ASSIGNMENT/EXAM/QUIZ/PROJECT/READING/STUDY): "));
             task = new AcademicTask(
-                    id, title, deadline, estimatedHours, difficulty,
+                    title, deadline, estimatedHours, difficulty,
                     importance, course, weight, taskType);
         } else if (kind.equals("general")) {
             task = new GeneralTask(
-                    id, title, deadline, estimatedHours, difficulty, importance);
+                    title, deadline, estimatedHours, difficulty, importance);
         } else {
             throw new IllegalArgumentException(
                     "Task kind must be general or academic.");
@@ -163,7 +160,6 @@ public class PlanPilotCLI {
 
     private void addAvailability() {
         AvailabilityBlock block = new AvailabilityBlock(
-                prompt("Availability ID: "),
                 LocalDateTime.parse(prompt("Start (YYYY-MM-DDTHH:MM): ")),
                 LocalDateTime.parse(prompt("End (YYYY-MM-DDTHH:MM): ")),
                 parseEnum(
@@ -223,8 +219,7 @@ public class PlanPilotCLI {
                     "Proposal action must be accept, edit, or cancel.");
         }
 
-        Task task = createTaskFromProposal(
-                prompt("Task ID: "), proposal);
+        Task task = createTaskFromProposal(proposal);
         Task created = controller.addTask(task);
         knownTasks.put(created.getId(), created);
         output.println("Proposed task confirmed and added.");
@@ -283,16 +278,15 @@ public class PlanPilotCLI {
                 courseCode, weight, taskType);
     }
 
-    private Task createTaskFromProposal(
-            String id, ParsedTaskData proposal) {
+    private Task createTaskFromProposal(ParsedTaskData proposal) {
         if (proposal.taskKind() == ParsedTaskKind.GENERAL) {
             return new GeneralTask(
-                    id, proposal.title(), proposal.deadline(),
+                    proposal.title(), proposal.deadline(),
                     proposal.estimatedHours(), proposal.difficulty(),
                     proposal.importance());
         }
         Course course = proposal.courseCode() == null
-                ? findCourse(prompt("Course ID: "))
+                ? chooseCourse()
                 : findCourseByIdOrCode(proposal.courseCode());
         double weight = proposal.assessmentWeight() == null
                 ? Double.parseDouble(prompt("Assessment weight (0-100): "))
@@ -302,13 +296,13 @@ public class PlanPilotCLI {
                 prompt("Type (ASSIGNMENT/EXAM/QUIZ/PROJECT/READING/STUDY): "))
                 : proposal.academicTaskType();
         return new AcademicTask(
-                id, proposal.title(), proposal.deadline(),
+                proposal.title(), proposal.deadline(),
                 proposal.estimatedHours(), proposal.difficulty(),
                 proposal.importance(), course, weight, taskType);
     }
 
     private void requestEffortSuggestion() {
-        Task task = findTask(prompt("Task ID: "));
+        Task task = chooseTask();
         double suggestion = controller.requestEffortSuggestion(task);
         output.printf("Current estimate: %.2f hours%n",
                 task.getEstimatedHours());
@@ -372,8 +366,8 @@ public class PlanPilotCLI {
         }
         output.printf("Study blocks (%s):%n", currentSchedule.getStatus());
         currentSchedule.getStudyBlocks().forEach(block -> output.printf(
-                "- %s | %s | %s to %s | %.2f hours | %s%n",
-                block.getId(), block.getTask().getTitle(),
+                "- %s | %s to %s | %.2f hours | %s%n",
+                block.getTask().getTitle(),
                 block.getStart(), block.getEnd(),
                 block.durationHours(), block.getProgressStatus()));
     }
@@ -383,12 +377,7 @@ public class PlanPilotCLI {
             output.println("Generate a schedule before recording progress.");
             return;
         }
-        String blockId = prompt("Study block ID: ");
-        StudyBlock block = currentSchedule.getStudyBlocks().stream()
-                .filter(candidate -> candidate.getId().equals(blockId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No study block exists with id " + blockId + "."));
+        StudyBlock block = chooseStudyBlock();
         String outcome = prompt("Outcome (COMPLETED/PARTIAL/SKIPPED): ")
                 .toUpperCase(Locale.ROOT);
 
@@ -423,18 +412,26 @@ public class PlanPilotCLI {
         }
         output.println("Tasks:");
         knownTasks.values().forEach(task -> output.printf(
-                "- %s | %s | %s | %.2f/%.2f hours completed | %.2f remaining%n",
-                task.getId(), task.getTitle(), task.getStatus(),
+                "- %s | %s | %.2f/%.2f hours completed | %.2f remaining%n",
+                task.getTitle(), task.getStatus(),
                 task.getCompletedHours(), task.getEstimatedHours(),
                 task.getRemainingHours()));
     }
 
-    private Course findCourse(String courseId) {
-        return controller.getCourses().stream()
-                .filter(course -> course.getId().equals(courseId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No course exists with id " + courseId + "."));
+    private Course chooseCourse() {
+        var courses = controller.getCourses();
+        if (courses.isEmpty()) {
+            throw new IllegalStateException(
+                    "Add a course before creating an academic task.");
+        }
+        output.println("Choose a course:");
+        for (int index = 0; index < courses.size(); index++) {
+            Course course = courses.get(index);
+            output.printf("%d. %s — %s%n", index + 1,
+                    course.getCode(), course.getName());
+        }
+        int selected = selectionIndex("Course number: ", courses.size());
+        return courses.get(selected);
     }
 
     private Course findCourseByIdOrCode(String value) {
@@ -446,12 +443,49 @@ public class PlanPilotCLI {
                         "No course exists with id or code " + value + "."));
     }
 
-    private Task findTask(String taskId) {
-        return controller.getTasks().stream()
-                .filter(task -> task.getId().equals(taskId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "No task exists with id " + taskId + "."));
+    private Task chooseTask() {
+        var tasks = controller.getTasks();
+        if (tasks.isEmpty()) {
+            throw new IllegalStateException("Add a task first.");
+        }
+        output.println("Choose a task:");
+        for (int index = 0; index < tasks.size(); index++) {
+            Task task = tasks.get(index);
+            output.printf("%d. %s (%s, %.2f hours remaining)%n",
+                    index + 1, task.getTitle(), task.getStatus(),
+                    task.getRemainingHours());
+        }
+        return tasks.get(selectionIndex("Task number: ", tasks.size()));
+    }
+
+    private StudyBlock chooseStudyBlock() {
+        var blocks = currentSchedule.getStudyBlocks();
+        if (blocks.isEmpty()) {
+            throw new IllegalStateException(
+                    "The current schedule has no study blocks.");
+        }
+        output.println("Choose a study block:");
+        for (int index = 0; index < blocks.size(); index++) {
+            StudyBlock block = blocks.get(index);
+            output.printf("%d. %s | %s to %s | %.2f hours (%s)%n",
+                    index + 1, block.getTask().getTitle(), block.getStart(),
+                    block.getEnd(), block.durationHours(),
+                    block.getProgressStatus());
+        }
+        return blocks.get(selectionIndex("Block number: ", blocks.size()));
+    }
+
+    private int selectionIndex(String prompt, int count) {
+        try {
+            int selected = Integer.parseInt(prompt(prompt));
+            if (selected < 1 || selected > count) {
+                throw new NumberFormatException();
+            }
+            return selected - 1;
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException(
+                    "Enter a number from 1 to " + count + ".");
+        }
     }
 
     private String prompt(String message) {

@@ -2,11 +2,20 @@ package com.planpilot.domain;
 
 import java.time.LocalDateTime;
 import java.util.Objects;
+import java.util.UUID;
 
 public class AcademicTask extends Task {
     private Course course;
     private double assessmentWeight;
     private AcademicTaskType taskType;
+
+    public AcademicTask(String title, LocalDateTime deadline,
+                        double estimatedHours, int difficulty,
+                        PriorityLevel userImportance, Course course,
+                        double assessmentWeight, AcademicTaskType taskType) {
+        this(UUID.randomUUID().toString(), title, deadline, estimatedHours,
+                difficulty, userImportance, course, assessmentWeight, taskType);
+    }
 
     public AcademicTask(String id, String title, LocalDateTime deadline,
                         double estimatedHours, int difficulty,

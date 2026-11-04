@@ -2,12 +2,18 @@ package com.planpilot.domain;
 
 import java.time.LocalDateTime;
 import java.util.Objects;
+import java.util.UUID;
 
 public class AvailabilityBlock {
     private final String id;
     private final LocalDateTime start;
     private final LocalDateTime end;
     private AvailabilityType type;
+
+    public AvailabilityBlock(LocalDateTime start, LocalDateTime end,
+                             AvailabilityType type) {
+        this(UUID.randomUUID().toString(), start, end, type);
+    }
 
     public AvailabilityBlock(String id, LocalDateTime start, LocalDateTime end,
                              AvailabilityType type) {
