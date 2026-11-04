@@ -81,8 +81,9 @@ Launch the JavaFX application with:
 mvn javafx:run
 ```
 
-The **AI Assistant** page provides editable natural-language task proposals,
-effort suggestions, grounded schedule explanations, workload recovery advice,
+The Tasks page can optionally use Gemini to fill the task form from a short
+description; review the fields and select **Add Task** to save it. The **AI Tools**
+page provides effort suggestions, schedule explanations, workload recovery advice,
 and user-approved replanning recommendations. Gemini requests run in the
 background so the JavaFX interface remains responsive. Course, task, and
 availability IDs are generated automatically and kept out of the forms. Course

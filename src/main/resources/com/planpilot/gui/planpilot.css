@@ -151,9 +151,24 @@
     -fx-text-fill: #25364b;
 }
 
+.inline-ai-entry {
+    -fx-background-color: #f2f6fd;
+    -fx-background-radius: 10px;
+    -fx-padding: 12px;
+}
+
+.inline-ai-entry > .label {
+    -fx-text-fill: #334b6a;
+}
+
 .field-label {
     -fx-text-fill: #53647a;
     -fx-font-weight: 600;
+}
+
+.percentage-suffix {
+    -fx-text-fill: #65758a;
+    -fx-font-weight: 700;
 }
 
 .text-field, .text-area, .combo-box, .date-picker {

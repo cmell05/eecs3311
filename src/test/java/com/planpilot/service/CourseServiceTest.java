@@ -57,4 +57,18 @@ class CourseServiceTest {
         assertThrows(UnsupportedOperationException.class,
                 () -> service.getCourses().add(course));
     }
+
+    @Test
+    void rejectsDuplicateCourseCodesRegardlessOfCaseOnAddAndUpdate() {
+        CourseService service = new CourseService();
+        service.addCourse(new Course("C1", "EECS3311", "Software Design"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.addCourse(
+                        new Course("C2", "eecs3311", "Duplicate")));
+        service.addCourse(new Course("C2", "EECS4413", "Networks"));
+        assertThrows(IllegalArgumentException.class,
+                () -> service.updateCourse(
+                        new Course("C2", "eecs3311", "Duplicate")));
+    }
 }

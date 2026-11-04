@@ -39,6 +39,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.DatePicker;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
+import javafx.scene.control.ListCell;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.TextArea;
@@ -56,6 +57,7 @@ import javafx.util.StringConverter;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -286,9 +288,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 });
         updateButton.setOnAction(event -> executeAction("Course updated", () -> {
             Course selected = selectedItem(courseList, courses, "course");
-            selected.setCode(required(codeField, "Course code"));
-            selected.rename(required(nameField, "Course name"));
-            controller.updateCourse(selected);
+            controller.updateCourse(new Course(
+                    selected.getId(),
+                    required(codeField, "Course code"),
+                    required(nameField, "Course name")));
         }));
         deleteButton.setOnAction(event -> executeAction("Course deleted", () ->
                 controller.deleteCourse(
@@ -306,7 +309,16 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         List<Task> tasks = controller.getTasks();
         ListView<String> taskList = new ListView<>(FXCollections.observableArrayList(
                 tasks.stream().map(this::formatTask).toList()));
-        taskList.setPlaceholder(new Label("No tasks have been added."));
+        taskList.setPlaceholder(new Label("No tasks yet. Add one using the form."));
+        taskList.setCellFactory(list -> new ListCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty ? null : item);
+                setWrapText(true);
+                setPrefHeight(empty ? -1 : 58);
+            }
+        });
 
         ComboBox<String> kindField = new ComboBox<>(
                 FXCollections.observableArrayList("General", "Academic"));
@@ -325,6 +337,14 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 controller.getCourses()));
         courseField.setConverter(courseConverter());
         TextField weightField = new TextField();
+        weightField.setPromptText("e.g. 10");
+        Label weightSuffix = new Label("%");
+        weightSuffix.getStyleClass().add("percentage-suffix");
+        HBox weightInput = new HBox(6, weightField, weightSuffix);
+        weightInput.setAlignment(Pos.CENTER_LEFT);
+        weightInput.setMaxWidth(Double.MAX_VALUE);
+        weightField.setMaxWidth(Double.MAX_VALUE);
+        HBox.setHgrow(weightField, Priority.ALWAYS);
         ComboBox<AcademicTaskType> academicTypeField = new ComboBox<>(
                 FXCollections.observableArrayList(AcademicTaskType.values()));
         academicTypeField.setValue(AcademicTaskType.ASSIGNMENT);
@@ -339,12 +359,11 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         addFormRow(detailsForm, 0, "Difficulty (1–5)", difficultyField);
         addFormRow(detailsForm, 1, "Importance", importanceField);
         addFormRow(detailsForm, 2, "Course", courseField);
-        addFormRow(detailsForm, 3, "Assessment weight (%)", weightField);
+        addFormRow(detailsForm, 3, "Assessment weight", weightInput);
         addFormRow(detailsForm, 4, "Academic type", academicTypeField);
         TitledPane academicDetails = new TitledPane(
                 "Priority and course details", detailsForm);
         academicDetails.setExpanded(false);
-        VBox taskFields = new VBox(10, form, academicDetails);
         Runnable updateAcademicFields = () -> {
             boolean academic = "Academic".equals(kindField.getValue());
             courseField.setDisable(!academic);
@@ -354,6 +373,43 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         };
         kindField.setOnAction(event -> updateAcademicFields.run());
         updateAcademicFields.run();
+
+        TextArea taskDescription = new TextArea();
+        taskDescription.setPromptText(
+                "Example: EECS3311 design report due Nov 20, about 4 hours");
+        taskDescription.setPrefRowCount(2);
+        Button fillWithAiButton = new Button("Fill form with AI");
+        fillWithAiButton.setDisable(!controller.isAiAvailable());
+        fillWithAiButton.setOnAction(event -> {
+            String description = taskDescription.getText() == null
+                    ? "" : taskDescription.getText().trim();
+            if (description.isBlank()) {
+                showError("Describe the task first, for example: EECS3311 design report due Nov 20, about 4 hours.");
+                return;
+            }
+            runAiAction(
+                    fillWithAiButton,
+                    "Drafting task details with Gemini...",
+                    () -> controller.parseNaturalLanguageTask(description),
+                    proposal -> {
+                        populateTaskForm(
+                                proposal, titleField, deadlineDate, deadlineTime,
+                                effortField, difficultyField, importanceField,
+                                kindField, courseField, weightField,
+                                academicTypeField, updateAcademicFields);
+                        statusLabel.setText(
+                                "Draft filled. Review it, then select Add Task.");
+                    });
+        });
+        Label aiTaskHint = new Label(controller.isAiAvailable()
+                ? "Optional: describe it here, review the filled fields, then add the task."
+                : "AI task entry is unavailable. Configure GEMINI_API_KEY in .env and restart.");
+        aiTaskHint.setWrapText(true);
+        VBox aiTaskEntry = new VBox(8,
+                new Label("Create from a description (optional)"),
+                aiTaskHint, taskDescription, fillWithAiButton);
+        aiTaskEntry.getStyleClass().add("inline-ai-entry");
+        VBox taskFields = new VBox(12, aiTaskEntry, form, academicDetails);
 
         Function<String, Task> taskFromForm = id -> {
             LocalDateTime deadline = combineDateAndTime(
@@ -435,110 +491,14 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         clearButton.setOnAction(event -> showPage(Page.TASKS));
 
         return createManagementPage(
-                "Tasks", "Add academic or general tasks and review open work.",
+                "Tasks", "Add a task manually or describe it to have AI fill the form.",
                 taskList, createEditor(
                         "Add or Edit Task", taskFields,
                         addButton, updateButton, deleteButton, clearButton));
     }
 
     private Node createAiAssistantPage() {
-        TextArea taskDescription = new TextArea();
-        taskDescription.setPromptText(
-                "Example: OS assignment due next Tuesday, worth 10%, about four hours");
-        taskDescription.setPrefRowCount(2);
-
-        TextField proposalTitle = new TextField();
-        DatePicker proposalDate = new DatePicker();
-        TextField proposalTime = new TextField("17:00");
-        TextField proposalEffort = new TextField();
-        ComboBox<Integer> proposalDifficulty = new ComboBox<>(
-                FXCollections.observableArrayList(1, 2, 3, 4, 5));
-        ComboBox<PriorityLevel> proposalImportance = new ComboBox<>(
-                FXCollections.observableArrayList(PriorityLevel.values()));
-        ComboBox<ParsedTaskKind> proposalKind = new ComboBox<>(
-                FXCollections.observableArrayList(ParsedTaskKind.values()));
-        ComboBox<Course> proposalCourse = new ComboBox<>(
-                FXCollections.observableArrayList(
-                        controller.getCourses()));
-        proposalCourse.setConverter(courseConverter());
-        TextField proposalWeight = new TextField();
-        ComboBox<AcademicTaskType> proposalType = new ComboBox<>(
-                FXCollections.observableArrayList(AcademicTaskType.values()));
-
-        proposalKind.setValue(ParsedTaskKind.GENERAL);
-        proposalDifficulty.setValue(3);
-        proposalImportance.setValue(PriorityLevel.MEDIUM);
-
-        GridPane proposalForm = createFormGrid();
-        addFormRow(proposalForm, 0, "Task title", proposalTitle);
-        addFormRow(proposalForm, 1, "Due date", proposalDate);
-        addFormRow(proposalForm, 2, "Due time", proposalTime);
-        addFormRow(proposalForm, 3, "Estimated hours", proposalEffort);
-        addFormRow(proposalForm, 4, "Task type", proposalKind);
-        GridPane proposalDetailsForm = createFormGrid();
-        addFormRow(proposalDetailsForm, 0, "Difficulty (1–5)", proposalDifficulty);
-        addFormRow(proposalDetailsForm, 1, "Importance", proposalImportance);
-        addFormRow(proposalDetailsForm, 2, "Course", proposalCourse);
-        addFormRow(proposalDetailsForm, 3, "Assessment weight (%)", proposalWeight);
-        addFormRow(proposalDetailsForm, 4, "Academic type", proposalType);
-        TitledPane proposalDetails = new TitledPane(
-                "Priority and course details", proposalDetailsForm);
-        proposalDetails.setExpanded(false);
-        VBox proposalFields = new VBox(10, proposalForm, proposalDetails);
-        Runnable updateProposalAcademicFields = () -> {
-            boolean academic = proposalKind.getValue()
-                    == ParsedTaskKind.ACADEMIC;
-            proposalCourse.setDisable(!academic);
-            proposalWeight.setDisable(!academic);
-            proposalType.setDisable(!academic);
-            proposalDetails.setExpanded(academic);
-        };
-        proposalKind.setOnAction(
-                event -> updateProposalAcademicFields.run());
-        updateProposalAcademicFields.run();
-
-        Button saveProposalButton = new Button("Confirm and Add Task");
-        saveProposalButton.setDisable(true);
-        Button parseTaskButton = new Button("Parse Task with Gemini");
-        parseTaskButton.setOnAction(event -> {
-            String description = taskDescription.getText() == null
-                    ? "" : taskDescription.getText().trim();
-            if (description.isBlank()) {
-                showError("Task description is required.");
-                return;
-            }
-            runAiAction(
-                    parseTaskButton,
-                    "Parsing task with Gemini...",
-                    () -> controller.parseNaturalLanguageTask(description),
-                    proposal -> {
-                        populateProposal(
-                                proposal, proposalTitle, proposalDate,
-                                proposalTime, proposalEffort,
-                                proposalDifficulty, proposalImportance,
-                                proposalKind, proposalCourse,
-                                proposalWeight, proposalType);
-                        updateProposalAcademicFields.run();
-                        saveProposalButton.setDisable(false);
-                        statusLabel.setText(
-                                "AI proposal ready; review before saving");
-                    });
-        });
-        saveProposalButton.setOnAction(event -> executeAction(
-                "Confirmed task added", () -> controller.addTask(
-                        taskFromProposalForm(
-                                proposalTitle, proposalDate,
-                                proposalTime, proposalEffort,
-                                proposalDifficulty, proposalImportance,
-                                proposalKind, proposalCourse,
-                                proposalWeight, proposalType))));
-        VBox taskParsingPanel = createEditor(
-                "Natural-Language Task Proposal",
-                new VBox(8, new Label("Task description:"),
-                        taskDescription, proposalFields),
-                parseTaskButton, saveProposalButton);
-        taskParsingPanel.setMaxWidth(Double.MAX_VALUE);
-
+        boolean aiAvailable = controller.isAiAvailable();
         ComboBox<Task> effortTask = new ComboBox<>(
                 FXCollections.observableArrayList(
                         controller.getTasks()));
@@ -548,7 +508,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         Button suggestEffortButton = new Button("Suggest Effort");
         Button applyEffortButton = new Button("Apply Reviewed Estimate");
         applyEffortButton.setDisable(true);
-        suggestEffortButton.setDisable(effortTask.getItems().isEmpty());
+        suggestEffortButton.setDisable(!aiAvailable || effortTask.getItems().isEmpty());
         suggestEffortButton.setOnAction(event -> {
             try {
                 Task selected = requiredValue(effortTask.getValue(), "Task");
@@ -590,7 +550,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         aiOutput.setWrapText(true);
         aiOutput.setPrefRowCount(7);
         Button explainButton = new Button("Explain Schedule");
-        explainButton.setDisable(displayedSchedule == null);
+        explainButton.setDisable(!aiAvailable || displayedSchedule == null);
         explainButton.setOnAction(event -> {
             String question = scheduleQuestion.getText() == null
                     ? "" : scheduleQuestion.getText().trim();
@@ -609,7 +569,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         });
 
         Button recoveryButton = new Button("Suggest Workload Recovery");
-        recoveryButton.setDisable(lastInfeasibility == null);
+        recoveryButton.setDisable(!aiAvailable || lastInfeasibility == null);
         recoveryButton.setOnAction(event -> runAiAction(
                 recoveryButton,
                 "Generating recovery suggestions...",
@@ -621,7 +581,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 }));
 
         Button recommendReplanButton = new Button("Recommend Replan Option");
-        recommendReplanButton.setDisable(displayedSchedule == null);
+        recommendReplanButton.setDisable(!aiAvailable || displayedSchedule == null);
         Button applyReplanButton = new Button("Apply Recommended Replan");
         applyReplanButton.setDisable(pendingReplanRecommendation == null);
         recommendReplanButton.setOnAction(event -> runAiAction(
@@ -661,13 +621,16 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 "Other tools: effort estimate, schedule advice, and replanning",
                 secondaryPanels);
         additionalAiTools.setExpanded(false);
-        VBox content = new VBox(18, taskParsingPanel, additionalAiTools);
-        ScrollPane scrollPane = new ScrollPane(content);
-        scrollPane.setFitToWidth(true);
+        Label configurationNote = new Label(aiAvailable
+                ? "AI is ready. Suggestions use your current planning data; review before applying."
+                : "Gemini is not configured. Add GEMINI_API_KEY to your local .env file and restart PlanPilot.");
+        configurationNote.setWrapText(true);
+        configurationNote.getStyleClass().add("page-instruction");
+        VBox content = new VBox(18, configurationNote, additionalAiTools);
         return createPage(
-                "AI Assistant",
-                "Review every Gemini proposal before it changes planning data.",
-                scrollPane);
+                "AI Tools",
+                "Optional help with effort estimates and schedule decisions.",
+                content);
     }
 
     private Node createAvailabilityPage() {
@@ -675,8 +638,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 LocalDateTime.MIN, LocalDateTime.MAX);
         ListView<String> availabilityList = new ListView<>(
                 FXCollections.observableArrayList(entries.stream()
-                        .map(block -> block.getType() + "  ·  " + block.getStart()
-                                + " to " + block.getEnd())
+                        .map(this::formatAvailability)
                         .toList()));
         availabilityList.setPlaceholder(new Label("No availability entries added yet."));
 
@@ -685,27 +647,32 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         TextField endTimeField = new TextField("10:00");
         ComboBox<AvailabilityType> typeField = new ComboBox<>(
                 FXCollections.observableArrayList(AvailabilityType.values()));
+        typeField.setConverter(new StringConverter<>() {
+            @Override
+            public String toString(AvailabilityType type) {
+                return availabilityTypeLabel(type);
+            }
+
+            @Override
+            public AvailabilityType fromString(String value) {
+                return java.util.Arrays.stream(AvailabilityType.values())
+                        .filter(type -> availabilityTypeLabel(type).equals(value))
+                        .findFirst().orElse(null);
+            }
+        });
         typeField.setValue(AvailabilityType.AVAILABLE);
 
         GridPane form = createFormGrid();
         addFormRow(form, 0, "Date", dateField);
-        addFormRow(form, 1, "Start time", startTimeField);
-        addFormRow(form, 2, "End time", endTimeField);
+        startTimeField.setPromptText("13:00 (24-hour time)");
+        endTimeField.setPromptText("14:00 (24-hour time)");
+        addFormRow(form, 1, "Start time (24h)", startTimeField);
+        addFormRow(form, 2, "End time (24h)", endTimeField);
         addFormRow(form, 3, "Entry type", typeField);
 
-        Button addButton = new Button("Add Availability");
-        addButton.setOnAction(event -> executeAction("Availability added", () -> {
-            LocalDate date = requiredValue(dateField.getValue(), "Date");
-            controller.addAvailability(new AvailabilityBlock(
-                    LocalDateTime.of(date, parseTime(startTimeField, "Start time")),
-                    LocalDateTime.of(date, parseTime(endTimeField, "End time")),
-                    requiredValue(typeField.getValue(), "Availability type")));
-        }));
-
-        Button updateButton = new Button("Update");
+        AvailabilityBlock[] editing = {null};
+        Button saveButton = new Button("Add time");
         Button deleteButton = new Button("Delete");
-        Button clearButton = new Button("Clear form");
-        updateButton.setDisable(true);
         deleteButton.setDisable(true);
         availabilityList.getSelectionModel().selectedIndexProperty().addListener(
                 (observable, oldIndex, newIndex) -> {
@@ -714,40 +681,63 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         return;
                     }
                     AvailabilityBlock selected = entries.get(index);
+                    editing[0] = selected;
+                    saveButton.setText("Save changes");
                     dateField.setValue(selected.getStart().toLocalDate());
                     startTimeField.setText(selected.getStart().toLocalTime().toString());
                     endTimeField.setText(selected.getEnd().toLocalTime().toString());
                     typeField.setValue(selected.getType());
-                    updateButton.setDisable(false);
                     deleteButton.setDisable(false);
                 });
-        updateButton.setOnAction(event -> executeAction(
-                "Availability updated", () -> {
-                    AvailabilityBlock selected = selectedItem(
-                            availabilityList, entries, "availability entry");
+        saveButton.setOnAction(event -> executeAction(
+                editing[0] == null ? "Availability added" : "Availability updated",
+                () -> {
                     LocalDate date = requiredValue(dateField.getValue(), "Date");
-                    controller.updateAvailability(new AvailabilityBlock(
-                            selected.getId(),
-                            LocalDateTime.of(
-                                    date, parseTime(startTimeField, "Start time")),
-                            LocalDateTime.of(
-                                    date, parseTime(endTimeField, "End time")),
-                            requiredValue(
-                                    typeField.getValue(), "Availability type")));
+                    LocalDateTime start = LocalDateTime.of(
+                            date, parseTime(startTimeField, "Start time"));
+                    LocalDateTime end = LocalDateTime.of(
+                            date, parseTime(endTimeField, "End time"));
+                    AvailabilityType type = requiredValue(
+                            typeField.getValue(), "Availability type");
+                    if (editing[0] != null) {
+                        controller.updateAvailability(new AvailabilityBlock(
+                                editing[0].getId(), start, end, type));
+                    } else {
+                        AvailabilityBlock candidate = new AvailabilityBlock(
+                                start, end, type);
+                        if (type == AvailabilityType.AVAILABLE
+                                && entries.stream().anyMatch(existing ->
+                                        existing.getType() == AvailabilityType.AVAILABLE
+                                                && candidate.overlaps(existing))) {
+                            throw new IllegalArgumentException(
+                                    "This overlaps an available window. Select that window in the list to change its times.");
+                        }
+                        controller.addAvailability(candidate);
+                    }
                 }));
         deleteButton.setOnAction(event -> executeAction(
                 "Availability deleted", () -> controller.deleteAvailability(
                         selectedItem(
                                 availabilityList, entries,
                                 "availability entry").getId())));
-        clearButton.setOnAction(event -> showPage(Page.AVAILABILITY));
+        Button clearButton = new Button("Add another time");
+        clearButton.setOnAction(event -> {
+            editing[0] = null;
+            availabilityList.getSelectionModel().clearSelection();
+            dateField.setValue(LocalDate.now());
+            startTimeField.setText("09:00");
+            endTimeField.setText("10:00");
+            typeField.setValue(AvailabilityType.AVAILABLE);
+            saveButton.setText("Add time");
+            deleteButton.setDisable(true);
+        });
 
         return createManagementPage(
                 "Availability", "Add free study time or fixed commitments.",
                 availabilityList,
                 createEditor(
-                        "Add or Edit Availability", form,
-                        addButton, updateButton, deleteButton, clearButton));
+                        "Availability time", form,
+                        saveButton, deleteButton, clearButton));
     }
 
     private Node createSchedulePage() {
@@ -761,15 +751,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 new Label("End:"), endField, generateButton);
         controls.setAlignment(Pos.CENTER_LEFT);
 
-        ComboBox<ReplanOption> replanField = new ComboBox<>(
-                FXCollections.observableArrayList(ReplanOption.values()));
-        replanField.setValue(ReplanOption.RESCHEDULE_INCOMPLETE_WORK);
-        Button replanButton = new Button("Apply Replan Option");
+        Button replanButton = new Button("Replan remaining work");
         replanButton.setDisable(displayedSchedule == null);
-        replanButton.setOnAction(event -> replanSchedule(replanField.getValue()));
-        HBox replanControls = new HBox(
-                10, new Label("Replan:"), replanField, replanButton);
-        replanControls.setAlignment(Pos.CENTER_LEFT);
+        replanButton.setOnAction(event -> replanSchedule(
+                ReplanOption.RESCHEDULE_INCOMPLETE_WORK));
 
         ListView<String> blockList = new ListView<>(FXCollections.observableArrayList(
                 scheduleBlocks().stream().map(this::formatStudyBlock).toList()));
@@ -816,7 +801,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         HBox scheduleContent = new HBox(20, blockList, preferenceDetails);
         HBox.setHgrow(blockList, Priority.ALWAYS);
         VBox content = new VBox(
-                12, controls, replanControls, summary, warning, scheduleContent);
+                12, controls, replanButton, summary, warning, scheduleContent);
         VBox.setVgrow(scheduleContent, Priority.ALWAYS);
         return createPage(
                 "Schedule", "Generate a deterministic schedule for a planning window.",
@@ -1129,10 +1114,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             case OVERVIEW -> "";
             case COURSES -> "Add course code and name. Select a course below to edit or remove it; academic tasks use this list.";
             case TASKS -> "Start with task type, title, due date, and estimated hours. Academic tasks also need a course. Priority settings are optional.";
-            case AVAILABILITY -> "Add time marked Available for study. Add classes, work, and appointments as commitments so the planner avoids them.";
-            case SCHEDULE -> "Add tasks and available time first. Choose a date range, then generate. If work does not fit, review the warning before replanning.";
+            case AVAILABILITY -> "Add time marked Available for study. To change an existing window, select it, edit the times, and press Save changes. Add classes and other commitments so the planner avoids them.";
+            case SCHEDULE -> "Add tasks and available time first. Choose a date range, then generate. Replan remaining work keeps completed sessions and rearranges the rest.";
             case PROGRESS -> "Select a scheduled block and record what happened. For partial work, enter the hours completed. Progress changes never regenerate a schedule automatically.";
-            case AI_ASSISTANT -> "AI tools are optional. Review every suggested task, estimate, explanation, or replanning option before confirming or applying it.";
+            case AI_ASSISTANT -> "AI tools are optional. Review estimates and schedule recommendations before applying them.";
         };
     }
 
@@ -1172,7 +1157,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         worker.start();
     }
 
-    private void populateProposal(
+    private void populateTaskForm(
             ParsedTaskData proposal,
             TextField titleField,
             DatePicker deadlineDate,
@@ -1180,17 +1165,19 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             TextField effortField,
             ComboBox<Integer> difficultyField,
             ComboBox<PriorityLevel> importanceField,
-            ComboBox<ParsedTaskKind> kindField,
+            ComboBox<String> kindField,
             ComboBox<Course> courseField,
             TextField weightField,
-            ComboBox<AcademicTaskType> typeField) {
+            ComboBox<AcademicTaskType> typeField,
+            Runnable updateAcademicFields) {
         titleField.setText(proposal.title());
         deadlineDate.setValue(proposal.deadline().toLocalDate());
         deadlineTime.setText(proposal.deadline().toLocalTime().toString());
         effortField.setText(Double.toString(proposal.estimatedHours()));
         difficultyField.setValue(proposal.difficulty());
         importanceField.setValue(proposal.importance());
-        kindField.setValue(proposal.taskKind());
+        kindField.setValue(proposal.taskKind() == ParsedTaskKind.ACADEMIC
+                ? "Academic" : "General");
         if (proposal.courseCode() == null) {
             courseField.setValue(null);
         } else {
@@ -1198,6 +1185,8 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                     .filter(course -> course.getId().equalsIgnoreCase(
                                     proposal.courseCode())
                             || course.getCode().equalsIgnoreCase(
+                                    proposal.courseCode())
+                            || course.getName().equalsIgnoreCase(
                                     proposal.courseCode()))
                     .findFirst()
                     .orElse(null);
@@ -1206,37 +1195,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         weightField.setText(proposal.assessmentWeight() == null
                 ? "" : proposal.assessmentWeight().toString());
         typeField.setValue(proposal.academicTaskType());
-    }
-
-    private Task taskFromProposalForm(
-            TextField titleField,
-            DatePicker deadlineDate,
-            TextField deadlineTime,
-            TextField effortField,
-            ComboBox<Integer> difficultyField,
-            ComboBox<PriorityLevel> importanceField,
-            ComboBox<ParsedTaskKind> kindField,
-            ComboBox<Course> courseField,
-            TextField weightField,
-            ComboBox<AcademicTaskType> typeField) {
-        String title = required(titleField, "Task title");
-        LocalDateTime deadline = combineDateAndTime(
-                deadlineDate, deadlineTime, "Deadline");
-        double effort = positiveDouble(effortField, "Estimated hours");
-        int difficulty = requiredValue(
-                difficultyField.getValue(), "Difficulty");
-        PriorityLevel importance = requiredValue(
-                importanceField.getValue(), "Importance");
-        ParsedTaskKind kind = requiredValue(
-                kindField.getValue(), "Task kind");
-        if (kind == ParsedTaskKind.GENERAL) {
-            return new GeneralTask(title, deadline, effort, difficulty, importance);
-        }
-        return new AcademicTask(
-                title, deadline, effort, difficulty, importance,
-                requiredValue(courseField.getValue(), "Course"),
-                nonNegativeDouble(weightField, "Assessment weight"),
-                requiredValue(typeField.getValue(), "Academic type"));
+        updateAcademicFields.run();
     }
 
     static String formatRecoveryPlan(RecoveryPlan recovery) {
@@ -1270,19 +1229,41 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private void showError(String message) {
         Alert alert = new Alert(Alert.AlertType.ERROR);
         alert.setTitle("PlanPilot Error");
-        alert.setHeaderText("Please check your input");
+        alert.setHeaderText("PlanPilot couldn't complete this action");
         alert.setContentText(message);
         alert.showAndWait();
         statusLabel.setText("Error: " + message);
     }
 
     private String formatTask(Task task) {
-        String prefix = task instanceof AcademicTask academicTask
-                ? academicTask.getCourse().getCode() + " | "
-                : "General | ";
-        return prefix + task.getTitle()
-                + " | " + task.getStatus()
-                + " | " + task.getRemainingHours() + "h remaining";
+        String course = task instanceof AcademicTask academicTask
+                ? academicTask.getCourse().getCode() + ": " : "Personal: ";
+        String deadline = task.getDeadline().format(
+                DateTimeFormatter.ofPattern("MMM d, h:mm a"));
+        return course + task.getTitle() + System.lineSeparator()
+                + "Due " + deadline + " · " + task.getStatus() + " · "
+                + String.format("%.1fh remaining", task.getRemainingHours());
+    }
+
+    private String formatAvailability(AvailabilityBlock block) {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("MMM d, h:mm a");
+        return availabilityTypeLabel(block.getType()) + " · "
+                + block.getStart().format(formatter) + "–"
+                + block.getEnd().format(DateTimeFormatter.ofPattern("h:mm a"));
+    }
+
+    private String availabilityTypeLabel(AvailabilityType type) {
+        if (type == null) {
+            return "";
+        }
+        return switch (type) {
+            case AVAILABLE -> "Available study time";
+            case CLASS -> "Class";
+            case WORK -> "Work";
+            case APPOINTMENT -> "Appointment";
+            case INTERVIEW -> "Interview";
+            case UNAVAILABLE -> "Unavailable";
+        };
     }
 
     private String courseLabel(Course course) {
@@ -1431,7 +1412,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         AVAILABILITY("Availability"),
         SCHEDULE("Schedule"),
         PROGRESS("Progress"),
-        AI_ASSISTANT("AI Assistant");
+        AI_ASSISTANT("AI Tools");
 
         private final String label;
 

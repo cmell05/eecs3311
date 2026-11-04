@@ -174,6 +174,10 @@ public class PlanPilotController {
         scheduleService.updatePreferences(preferences);
     }
 
+    public boolean isAiAvailable() {
+        return planningAgent != null && effortEstimator != null;
+    }
+
     public void markScheduleOutdated() {
         scheduleService.markScheduleOutdated();
     }

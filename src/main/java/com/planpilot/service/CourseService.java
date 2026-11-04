@@ -16,6 +16,7 @@ public class CourseService {
             throw new IllegalArgumentException(
                     "A course with id " + courseData.getId() + " already exists.");
         }
+        ensureUniqueCode(courseData, null);
         courses.put(courseData.getId(), courseData);
         return courseData;
     }
@@ -23,6 +24,7 @@ public class CourseService {
     public void updateCourse(Course course) {
         validateCourse(course);
         requireExistingCourse(course.getId());
+        ensureUniqueCode(course, course.getId());
         courses.put(course.getId(), course);
     }
 
@@ -50,6 +52,18 @@ public class CourseService {
     private void requireExistingCourse(String courseId) {
         if (!courses.containsKey(courseId)) {
             throw new IllegalArgumentException("No course exists with id " + courseId + ".");
+        }
+    }
+
+    private void ensureUniqueCode(Course candidate, String excludedId) {
+        boolean duplicate = courses.values().stream()
+                .filter(existing -> !existing.getId().equals(excludedId))
+                .anyMatch(existing -> existing.getCode()
+                        .equalsIgnoreCase(candidate.getCode()));
+        if (duplicate) {
+            throw new IllegalArgumentException(
+                    "Course code " + candidate.getCode()
+                            + " is already in use. Choose a unique course code.");
         }
     }
 
