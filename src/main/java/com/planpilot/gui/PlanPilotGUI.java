@@ -43,6 +43,7 @@ import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TitledPane;
 import javafx.scene.control.Tooltip;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.GridPane;
@@ -65,7 +66,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private PlanningEventPublisher eventPublisher;
     private BorderPane root;
     private Label statusLabel;
-    private Page currentPage = Page.COURSES;
+    private Page currentPage = Page.OVERVIEW;
     private Schedule displayedSchedule;
     private LocalDate planningStart = LocalDate.now();
     private LocalDate planningEnd = LocalDate.now().plusDays(7);
@@ -96,7 +97,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         statusLabel.setPadding(new Insets(12, 20, 12, 20));
         statusLabel.getStyleClass().add("status-bar");
         root.setBottom(statusLabel);
-        showPage(Page.COURSES);
+        showPage(Page.OVERVIEW);
 
         stage.setTitle("PlanPilot");
         Scene scene = new Scene(root, 1180, 780);
@@ -170,6 +171,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             }
         });
         root.setCenter(switch (page) {
+            case OVERVIEW -> createOverviewPage();
             case COURSES -> createCoursesPage();
             case TASKS -> createTasksPage();
             case AVAILABILITY -> createAvailabilityPage();
@@ -178,6 +180,72 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             case AI_ASSISTANT -> createAiAssistantPage();
         });
         statusLabel.setText(page.label);
+    }
+
+    private Node createOverviewPage() {
+        int courseCount = controller.getCourses().size();
+        int taskCount = controller.getTasks().size();
+        long availabilityCount = controller.getAvailability(
+                LocalDateTime.MIN, LocalDateTime.MAX).size();
+        int blockCount = scheduleBlocks().size();
+
+        HBox metrics = new HBox(14,
+                metricCard(Integer.toString(courseCount), "Courses"),
+                metricCard(Integer.toString(taskCount), "Tasks"),
+                metricCard(Long.toString(availabilityCount), "Availability entries"),
+                metricCard(Integer.toString(blockCount), "Scheduled study blocks"));
+        metrics.getStyleClass().add("metric-row");
+        metrics.getChildren().forEach(node -> HBox.setHgrow(node, Priority.ALWAYS));
+
+        VBox steps = new VBox(12,
+                guideStep("1", "Add your courses", "Optional for personal tasks; needed for academic tasks."),
+                guideStep("2", "Add tasks", "Enter a deadline and an effort estimate. Difficulty and importance have defaults."),
+                guideStep("3", "Set your availability", "Add study windows, then add classes, shifts, or other commitments."),
+                guideStep("4", "Build your plan", "Choose a date range and generate a schedule. Record outcomes in Progress."));
+        steps.getStyleClass().add("panel");
+        VBox.setVgrow(steps, Priority.ALWAYS);
+
+        Button courseButton = new Button("Set up courses");
+        courseButton.setOnAction(event -> showPage(Page.COURSES));
+        Button taskButton = new Button("Add tasks");
+        taskButton.setOnAction(event -> showPage(Page.TASKS));
+        Button availabilityButton = new Button("Set availability");
+        availabilityButton.setOnAction(event -> showPage(Page.AVAILABILITY));
+        Button scheduleButton = new Button("Generate schedule");
+        scheduleButton.getStyleClass().add("primary-action");
+        scheduleButton.setOnAction(event -> showPage(Page.SCHEDULE));
+        HBox actions = new HBox(10,
+                courseButton, taskButton, availabilityButton, scheduleButton);
+
+        VBox content = new VBox(18,
+                metrics, new Label("Start with these four steps:"), steps, actions);
+        content.getStyleClass().add("overview-content");
+        return createPage("Welcome to PlanPilot",
+                "Plan study time around your deadlines and real availability.", content);
+    }
+
+    private VBox metricCard(String value, String caption) {
+        Label valueLabel = new Label(value);
+        valueLabel.getStyleClass().add("metric-value");
+        Label captionLabel = new Label(caption);
+        captionLabel.getStyleClass().add("metric-caption");
+        VBox card = new VBox(5, valueLabel, captionLabel);
+        card.getStyleClass().add("metric-card");
+        return card;
+    }
+
+    private HBox guideStep(String number, String title, String detail) {
+        Label numberLabel = new Label(number);
+        numberLabel.getStyleClass().add("step-number");
+        Label titleLabel = new Label(title);
+        titleLabel.getStyleClass().add("step-title");
+        Label detailLabel = new Label(detail);
+        detailLabel.getStyleClass().add("step-detail");
+        detailLabel.setWrapText(true);
+        VBox text = new VBox(4, titleLabel, detailLabel);
+        HBox step = new HBox(12, numberLabel, text);
+        step.setAlignment(Pos.CENTER_LEFT);
+        return step;
     }
 
     private Node createCoursesPage() {
@@ -201,7 +269,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
         Button updateButton = new Button("Update");
         Button deleteButton = new Button("Delete");
-        Button clearButton = new Button("New/Clear");
+        Button clearButton = new Button("Clear form");
         updateButton.setDisable(true);
         deleteButton.setDisable(true);
         courseList.getSelectionModel().selectedIndexProperty().addListener(
@@ -261,26 +329,31 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 FXCollections.observableArrayList(AcademicTaskType.values()));
         academicTypeField.setValue(AcademicTaskType.ASSIGNMENT);
 
-        Runnable updateAcademicFields = () -> {
-            boolean academic = "Academic".equals(kindField.getValue());
-            courseField.setDisable(!academic);
-            weightField.setDisable(!academic);
-            academicTypeField.setDisable(!academic);
-        };
-        kindField.setOnAction(event -> updateAcademicFields.run());
-        updateAcademicFields.run();
-
         GridPane form = createFormGrid();
         addFormRow(form, 0, "Task kind", kindField);
         addFormRow(form, 1, "Task title", titleField);
         addFormRow(form, 2, "Due date", deadlineDate);
         addFormRow(form, 3, "Due time", deadlineTime);
         addFormRow(form, 4, "Estimated hours", effortField);
-        addFormRow(form, 5, "Difficulty (1–5)", difficultyField);
-        addFormRow(form, 6, "Importance", importanceField);
-        addFormRow(form, 7, "Course", courseField);
-        addFormRow(form, 8, "Assessment weight (%)", weightField);
-        addFormRow(form, 9, "Academic type", academicTypeField);
+        GridPane detailsForm = createFormGrid();
+        addFormRow(detailsForm, 0, "Difficulty (1–5)", difficultyField);
+        addFormRow(detailsForm, 1, "Importance", importanceField);
+        addFormRow(detailsForm, 2, "Course", courseField);
+        addFormRow(detailsForm, 3, "Assessment weight (%)", weightField);
+        addFormRow(detailsForm, 4, "Academic type", academicTypeField);
+        TitledPane academicDetails = new TitledPane(
+                "Priority and course details", detailsForm);
+        academicDetails.setExpanded(false);
+        VBox taskFields = new VBox(10, form, academicDetails);
+        Runnable updateAcademicFields = () -> {
+            boolean academic = "Academic".equals(kindField.getValue());
+            courseField.setDisable(!academic);
+            weightField.setDisable(!academic);
+            academicTypeField.setDisable(!academic);
+            academicDetails.setExpanded(academic);
+        };
+        kindField.setOnAction(event -> updateAcademicFields.run());
+        updateAcademicFields.run();
 
         Function<String, Task> taskFromForm = id -> {
             LocalDateTime deadline = combineDateAndTime(
@@ -314,7 +387,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         Button addButton = new Button("Add Task");
         Button updateButton = new Button("Update");
         Button deleteButton = new Button("Delete");
-        Button clearButton = new Button("New/Clear");
+        Button clearButton = new Button("Clear form");
         updateButton.setDisable(true);
         deleteButton.setDisable(true);
         addButton.setOnAction(event -> executeAction(
@@ -364,7 +437,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         return createManagementPage(
                 "Tasks", "Add academic or general tasks and review open work.",
                 taskList, createEditor(
-                        "Add or Edit Task", form,
+                        "Add or Edit Task", taskFields,
                         addButton, updateButton, deleteButton, clearButton));
     }
 
@@ -392,31 +465,37 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         ComboBox<AcademicTaskType> proposalType = new ComboBox<>(
                 FXCollections.observableArrayList(AcademicTaskType.values()));
 
-        Runnable updateProposalAcademicFields = () -> {
-            boolean academic = proposalKind.getValue()
-                    == ParsedTaskKind.ACADEMIC;
-            proposalCourse.setDisable(!academic);
-            proposalWeight.setDisable(!academic);
-            proposalType.setDisable(!academic);
-        };
-        proposalKind.setOnAction(
-                event -> updateProposalAcademicFields.run());
         proposalKind.setValue(ParsedTaskKind.GENERAL);
         proposalDifficulty.setValue(3);
         proposalImportance.setValue(PriorityLevel.MEDIUM);
-        updateProposalAcademicFields.run();
 
         GridPane proposalForm = createFormGrid();
         addFormRow(proposalForm, 0, "Task title", proposalTitle);
         addFormRow(proposalForm, 1, "Due date", proposalDate);
         addFormRow(proposalForm, 2, "Due time", proposalTime);
         addFormRow(proposalForm, 3, "Estimated hours", proposalEffort);
-        addFormRow(proposalForm, 4, "Difficulty (1–5)", proposalDifficulty);
-        addFormRow(proposalForm, 5, "Importance", proposalImportance);
-        addFormRow(proposalForm, 6, "Task type", proposalKind);
-        addFormRow(proposalForm, 7, "Course", proposalCourse);
-        addFormRow(proposalForm, 8, "Assessment weight (%)", proposalWeight);
-        addFormRow(proposalForm, 9, "Academic type", proposalType);
+        addFormRow(proposalForm, 4, "Task type", proposalKind);
+        GridPane proposalDetailsForm = createFormGrid();
+        addFormRow(proposalDetailsForm, 0, "Difficulty (1–5)", proposalDifficulty);
+        addFormRow(proposalDetailsForm, 1, "Importance", proposalImportance);
+        addFormRow(proposalDetailsForm, 2, "Course", proposalCourse);
+        addFormRow(proposalDetailsForm, 3, "Assessment weight (%)", proposalWeight);
+        addFormRow(proposalDetailsForm, 4, "Academic type", proposalType);
+        TitledPane proposalDetails = new TitledPane(
+                "Priority and course details", proposalDetailsForm);
+        proposalDetails.setExpanded(false);
+        VBox proposalFields = new VBox(10, proposalForm, proposalDetails);
+        Runnable updateProposalAcademicFields = () -> {
+            boolean academic = proposalKind.getValue()
+                    == ParsedTaskKind.ACADEMIC;
+            proposalCourse.setDisable(!academic);
+            proposalWeight.setDisable(!academic);
+            proposalType.setDisable(!academic);
+            proposalDetails.setExpanded(academic);
+        };
+        proposalKind.setOnAction(
+                event -> updateProposalAcademicFields.run());
+        updateProposalAcademicFields.run();
 
         Button saveProposalButton = new Button("Confirm and Add Task");
         saveProposalButton.setDisable(true);
@@ -456,7 +535,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         VBox taskParsingPanel = createEditor(
                 "Natural-Language Task Proposal",
                 new VBox(8, new Label("Task description:"),
-                        taskDescription, proposalForm),
+                        taskDescription, proposalFields),
                 parseTaskButton, saveProposalButton);
         taskParsingPanel.setMaxWidth(Double.MAX_VALUE);
 
@@ -578,7 +657,11 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         HBox secondaryPanels = new HBox(16, effortPanel, schedulePanel);
         HBox.setHgrow(effortPanel, Priority.ALWAYS);
         HBox.setHgrow(schedulePanel, Priority.ALWAYS);
-        VBox content = new VBox(18, taskParsingPanel, secondaryPanels);
+        TitledPane additionalAiTools = new TitledPane(
+                "Other tools: effort estimate, schedule advice, and replanning",
+                secondaryPanels);
+        additionalAiTools.setExpanded(false);
+        VBox content = new VBox(18, taskParsingPanel, additionalAiTools);
         ScrollPane scrollPane = new ScrollPane(content);
         scrollPane.setFitToWidth(true);
         return createPage(
@@ -621,7 +704,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
         Button updateButton = new Button("Update");
         Button deleteButton = new Button("Delete");
-        Button clearButton = new Button("New/Clear");
+        Button clearButton = new Button("Clear form");
         updateButton.setDisable(true);
         deleteButton.setDisable(true);
         availabilityList.getSelectionModel().selectedIndexProperty().addListener(
@@ -726,8 +809,11 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         VBox preferenceEditor = createEditor(
                 "Scheduling Preferences", preferenceForm, savePreferencesButton);
         preferenceEditor.setPrefWidth(300);
+        TitledPane preferenceDetails = new TitledPane(
+                "Optional schedule preferences", preferenceEditor);
+        preferenceDetails.setExpanded(false);
 
-        HBox scheduleContent = new HBox(20, blockList, preferenceEditor);
+        HBox scheduleContent = new HBox(20, blockList, preferenceDetails);
         HBox.setHgrow(blockList, Priority.ALWAYS);
         VBox content = new VBox(
                 12, controls, replanControls, summary, warning, scheduleContent);
@@ -1020,7 +1106,15 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         heading.getStyleClass().add("page-title");
         Label subtitle = new Label(description);
         subtitle.getStyleClass().add("page-subtitle");
-        VBox page = new VBox(18, heading, subtitle, content);
+        VBox page = new VBox(18, heading, subtitle);
+        String instruction = pageInstruction(currentPage);
+        if (!instruction.isBlank()) {
+            Label instructionLabel = new Label(instruction);
+            instructionLabel.setWrapText(true);
+            instructionLabel.getStyleClass().add("page-instruction");
+            page.getChildren().add(instructionLabel);
+        }
+        page.getChildren().add(content);
         page.setPadding(new Insets(28, 32, 32, 32));
         page.getStyleClass().add("page-content");
         VBox.setVgrow(content, Priority.ALWAYS);
@@ -1028,6 +1122,18 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         scroll.setFitToWidth(true);
         scroll.getStyleClass().add("page-scroll");
         return scroll;
+    }
+
+    private String pageInstruction(Page page) {
+        return switch (page) {
+            case OVERVIEW -> "";
+            case COURSES -> "Add course code and name. Select a course below to edit or remove it; academic tasks use this list.";
+            case TASKS -> "Start with task type, title, due date, and estimated hours. Academic tasks also need a course. Priority settings are optional.";
+            case AVAILABILITY -> "Add time marked Available for study. Add classes, work, and appointments as commitments so the planner avoids them.";
+            case SCHEDULE -> "Add tasks and available time first. Choose a date range, then generate. If work does not fit, review the warning before replanning.";
+            case PROGRESS -> "Select a scheduled block and record what happened. For partial work, enter the hours completed. Progress changes never regenerate a schedule automatically.";
+            case AI_ASSISTANT -> "AI tools are optional. Review every suggested task, estimate, explanation, or replanning option before confirming or applying it.";
+        };
     }
 
     private void executeAction(String successMessage, Runnable action) {
@@ -1319,6 +1425,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     }
 
     private enum Page {
+        OVERVIEW("Overview"),
         COURSES("Courses"),
         TASKS("Tasks"),
         AVAILABILITY("Availability"),
