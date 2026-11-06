@@ -57,10 +57,9 @@ class PlanPilotCLITest {
     }
 
     @Test
-    void invalidInputReportsErrorAndReturnsToMenu() {
+    void invalidDateCanBeCancelledWithoutCrashing() {
         String input = String.join("\n",
-                "5", "not-a-date", "2026-10-28T10:00", "AVAILABLE",
-                "0") + "\n";
+                "5", "not-a-date", "/cancel", "0") + "\n";
 
         String output = assertDoesNotThrow(() -> runCli(input));
 
@@ -133,7 +132,7 @@ class PlanPilotCLITest {
                 AvailabilityType.AVAILABLE));
 
         String output = runCli(String.join("\n",
-                "6", "2026-11-03", "2026-11-03", "0") + "\n",
+                "6", "2026-11-03", "2026-11-03", "4", "0", "0") + "\n",
                 controller);
 
         assertTrue(output.contains("1.00 hours could not be scheduled"));
@@ -202,7 +201,7 @@ class PlanPilotCLITest {
         ProgressService progressService = new ProgressService();
         ScheduleService scheduleService = new ScheduleService(
                 taskService, availabilityService,
-                new SchedulePlanner(task -> 1.0, new ConflictDetector()),
+                new SchedulePlanner(task -> 1.0, new ConflictDetector(), java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC)),
                 new UserPreferences(60, StudyPeriod.ANY, 0));
         return new PlanPilotController(
                 courseService, taskService, availabilityService,

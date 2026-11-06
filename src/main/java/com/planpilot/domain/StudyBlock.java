@@ -5,7 +5,8 @@ import java.util.Objects;
 
 public class StudyBlock {
     private final String id;
-    private final Task task;
+    private Task task;
+    private boolean inferred;
     private final LocalDateTime start;
     private final LocalDateTime end;
     private ProgressStatus progressStatus;
@@ -31,15 +32,27 @@ public class StudyBlock {
         return java.time.Duration.between(start, end).toMinutes() / 60.0;
     }
 
+    public boolean isInferred() { return inferred; }
+
+    public void rebindTask(Task task) {
+        if (!this.task.getId().equals(task.getId())) throw new IllegalArgumentException("Task identity cannot change.");
+        this.task = task;
+    }
+
+    public void markInferred() { inferred = true; }
+
     public void markCompleted() {
+        inferred = false;
         progressStatus = ProgressStatus.COMPLETED;
     }
 
     public void markPartial() {
+        inferred = false;
         progressStatus = ProgressStatus.PARTIAL;
     }
 
     public void markSkipped() {
+        inferred = false;
         progressStatus = ProgressStatus.SKIPPED;
     }
 

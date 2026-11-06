@@ -52,6 +52,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
+import javafx.stage.Modality;
 import javafx.util.StringConverter;
 
 import java.time.LocalDate;
@@ -66,8 +67,12 @@ import java.util.function.Supplier;
 public class PlanPilotGUI extends Application implements PlanningObserver {
     private PlanPilotController controller;
     private PlanningEventPublisher eventPublisher;
+    private Stage mainStage;
     private BorderPane root;
     private Label statusLabel;
+    private javafx.animation.Timeline progressTimer;
+    private String selectedProgressSessionId;
+    private final javafx.beans.property.BooleanProperty aiBusy = new javafx.beans.property.SimpleBooleanProperty(false);
     private Page currentPage = Page.OVERVIEW;
     private Schedule displayedSchedule;
     private LocalDate planningStart = LocalDate.now();
@@ -86,6 +91,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
     @Override
     public void start(Stage stage) {
+        mainStage = stage;
         PlanPilotApplicationContext context =
                 PlanPilotApplicationFactory.createDefault();
         controller = context.controller();
@@ -96,6 +102,8 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         root.getStyleClass().add("app-root");
         root.setLeft(createNavigation());
         statusLabel = new Label("Ready");
+        statusLabel.setWrapText(true);
+        statusLabel.setMaxWidth(Double.MAX_VALUE);
         statusLabel.setPadding(new Insets(12, 20, 12, 20));
         statusLabel.getStyleClass().add("status-bar");
         root.setBottom(statusLabel);
@@ -111,10 +119,16 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         stage.setMinWidth(860);
         stage.setMinHeight(560);
         stage.show();
+        progressTimer = new javafx.animation.Timeline(new javafx.animation.KeyFrame(
+                javafx.util.Duration.seconds(30), event -> refreshInferredProgress()));
+        progressTimer.setCycleCount(javafx.animation.Animation.INDEFINITE);
+        progressTimer.play();
+        refreshInferredProgress();
     }
 
     @Override
     public void stop() {
+        if (progressTimer != null) progressTimer.stop();
         if (eventPublisher != null) {
             eventPublisher.unsubscribe(this);
         }
@@ -124,8 +138,12 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     public void onPlanningStateChanged() {
         Runnable refresh = () -> {
             if (root != null) {
+                if (!scheduleGenerationInProgress) {
+                    pendingReplanRecommendation = null;
+                    lastInfeasibility = null;
+                }
                 if (displayedSchedule != null && !scheduleGenerationInProgress) {
-                    scheduleMayBeOutdated = true;
+                    scheduleMayBeOutdated = displayedSchedule.getStatus() == com.planpilot.domain.ScheduleStatus.OUTDATED;
                 }
                 showPage(currentPage);
                 statusLabel.setText(scheduleMayBeOutdated
@@ -283,6 +301,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                     Course selected = courses.get(index);
                     codeField.setText(selected.getCode());
                     nameField.setText(selected.getName());
+                    addButton.setDisable(true);
                     updateButton.setDisable(false);
                     deleteButton.setDisable(false);
                 });
@@ -293,9 +312,11 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                     required(codeField, "Course code"),
                     required(nameField, "Course name")));
         }));
-        deleteButton.setOnAction(event -> executeAction("Course deleted", () ->
-                controller.deleteCourse(
-                        selectedItem(courseList, courses, "course").getId())));
+        deleteButton.setOnAction(event -> {
+            Course selected = selectedItem(courseList, courses, "course");
+            if (confirmChange("Delete course " + selected.getCode() + "?", "Academic tasks must be removed or reassigned first."))
+                executeAction("Course deleted", () -> controller.deleteCourse(selected.getId()));
+        });
         clearButton.setOnAction(event -> showPage(Page.COURSES));
 
         return createManagementPage(
@@ -307,16 +328,27 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
     private Node createTasksPage() {
         List<Task> tasks = controller.getTasks();
-        ListView<String> taskList = new ListView<>(FXCollections.observableArrayList(
-                tasks.stream().map(this::formatTask).toList()));
+        ListView<Task> taskList = new ListView<>(FXCollections.observableArrayList(tasks));
         taskList.setPlaceholder(new Label("No tasks yet. Add one using the form."));
-        taskList.setCellFactory(list -> new ListCell<>() {
-            @Override
-            protected void updateItem(String item, boolean empty) {
-                super.updateItem(item, empty);
-                setText(empty ? null : item);
-                setWrapText(true);
-                setPrefHeight(empty ? -1 : 58);
+        taskList.setCellFactory(view -> new ListCell<>() {
+            @Override protected void updateItem(Task task, boolean empty) {
+                super.updateItem(task, empty); setText(null);
+                if (empty || task == null) { setGraphic(null); return; }
+                Label title = new Label(task instanceof AcademicTask academic
+                        ? academic.getCourse().getCode() + ": " + task.getTitle() : task.getTitle());
+                title.getStyleClass().add("session-title"); title.setWrapText(true);
+                Label deadline = new Label("Due " + task.getDeadline().format(DateTimeFormatter.ofPattern("MMM d, yyyy · h:mm a")));
+                deadline.setWrapText(true);
+                Label effort = new Label(String.format("%.1f hours remaining of %.1f estimated",
+                        task.getRemainingHours(), task.getEstimatedHours()));
+                effort.setWrapText(true);
+                Label status = new Label(task.getStatus().name().replace('_', ' ')
+                        + (task.getDeferredUntil() == null ? "" : " — Deferred until " + task.getDeferredUntil().toLocalDate()));
+                VBox card = new VBox(6, title, deadline, effort, status);
+                card.getStyleClass().add("session-card");
+                card.setStyle("-fx-border-color: " + taskColour(task) + ";");
+                card.prefWidthProperty().bind(view.widthProperty().subtract(40));
+                setGraphic(card);
             }
         });
 
@@ -355,21 +387,27 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         addFormRow(form, 2, "Due date", deadlineDate);
         addFormRow(form, 3, "Due time", deadlineTime);
         addFormRow(form, 4, "Estimated hours", effortField);
+        addFormRow(form, 5, "Difficulty (1–5)", difficultyField);
+        addFormRow(form, 6, "Importance", importanceField);
         GridPane detailsForm = createFormGrid();
-        addFormRow(detailsForm, 0, "Difficulty (1–5)", difficultyField);
-        addFormRow(detailsForm, 1, "Importance", importanceField);
-        addFormRow(detailsForm, 2, "Course", courseField);
-        addFormRow(detailsForm, 3, "Assessment weight", weightInput);
-        addFormRow(detailsForm, 4, "Academic type", academicTypeField);
+        addFormRow(detailsForm, 0, "Course", courseField);
+        addFormRow(detailsForm, 1, "Assessment weight", weightInput);
+        addFormRow(detailsForm, 2, "Academic type", academicTypeField);
         TitledPane academicDetails = new TitledPane(
-                "Priority and course details", detailsForm);
+                "Course details", detailsForm);
         academicDetails.setExpanded(false);
         Runnable updateAcademicFields = () -> {
             boolean academic = "Academic".equals(kindField.getValue());
             courseField.setDisable(!academic);
             weightField.setDisable(!academic);
             academicTypeField.setDisable(!academic);
+            detailsForm.getChildren().forEach(node -> {
+                node.setVisible(academic);
+                node.setManaged(academic);
+            });
             academicDetails.setExpanded(academic);
+            academicDetails.setVisible(academic);
+            academicDetails.setManaged(academic);
         };
         kindField.setOnAction(event -> updateAcademicFields.run());
         updateAcademicFields.run();
@@ -473,28 +511,38 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         weightField.clear();
                     }
                     updateAcademicFields.run();
+                    addButton.setDisable(true);
                     updateButton.setDisable(false);
                     deleteButton.setDisable(false);
                 });
         updateButton.setOnAction(event -> executeAction("Task updated", () -> {
             Task selected = selectedItem(taskList, tasks, "task");
             Task updated = taskFromForm.apply(selected.getId());
+            updated.setDeferredUntil(selected.getDeferredUntil());
             updated.setCompletedHours(selected.getCompletedHours());
             if (selected.getStatus() == TaskStatus.SKIPPED) {
                 updated.markSkipped();
             }
             controller.updateTask(updated);
         }));
-        deleteButton.setOnAction(event -> executeAction("Task deleted", () ->
-                controller.deleteTask(
-                        selectedItem(taskList, tasks, "task").getId())));
+        deleteButton.setOnAction(event -> {
+            Task selected = selectedItem(taskList, tasks, "task");
+            if (confirmChange("Delete task " + selected.getTitle() + "?", "The task leaves the active list. Recorded session history is kept."))
+                executeAction("Task deleted", () -> controller.deleteTask(selected.getId()));
+        });
         clearButton.setOnAction(event -> showPage(Page.TASKS));
+        Button resumeButton = new Button("Include deferred task again");
+        resumeButton.setDisable(true);
+        taskList.getSelectionModel().selectedItemProperty().addListener((obs, oldTask, task) ->
+                resumeButton.setDisable(task == null || task.getDeferredUntil() == null));
+        resumeButton.setOnAction(event -> executeAction("Task included again; replan when ready", () ->
+                controller.resumeTask(selectedItem(taskList, tasks, "task").getId())));
 
         return createManagementPage(
                 "Tasks", "Add a task manually or describe it to have AI fill the form.",
                 taskList, createEditor(
                         "Add or Edit Task", taskFields,
-                        addButton, updateButton, deleteButton, clearButton));
+                        addButton, updateButton, deleteButton, clearButton, resumeButton));
     }
 
     private Node createAiAssistantPage() {
@@ -508,7 +556,8 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         Button suggestEffortButton = new Button("Suggest Effort");
         Button applyEffortButton = new Button("Apply Reviewed Estimate");
         applyEffortButton.setDisable(true);
-        suggestEffortButton.setDisable(!aiAvailable || effortTask.getItems().isEmpty());
+        suggestEffortButton.disableProperty().bind(
+                effortTask.valueProperty().isNull().or(aiBusy).or(new javafx.beans.property.SimpleBooleanProperty(!aiAvailable)));
         suggestEffortButton.setOnAction(event -> {
             try {
                 Task selected = requiredValue(effortTask.getValue(), "Task");
@@ -517,6 +566,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         "Requesting effort suggestion...",
                         () -> controller.requestEffortSuggestion(selected),
                         hours -> {
+                            if (effortTask.getValue() != selected) return;
                             suggestedEffort.setText(Double.toString(hours));
                             applyEffortButton.setDisable(false);
                             statusLabel.setText(
@@ -534,11 +584,15 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                     selected.setEstimatedHours(hours);
                     controller.updateTask(selected);
                 }));
+        effortTask.valueProperty().addListener((obs, oldTask, newTask) -> {
+            applyEffortButton.setDisable(true);
+            suggestedEffort.clear();
+        });
         GridPane effortForm = createFormGrid();
         addFormRow(effortForm, 0, "Task", effortTask);
         addFormRow(effortForm, 1, "Reviewed estimate", suggestedEffort);
         VBox effortPanel = createEditor(
-                "Adaptive Effort Suggestion", effortForm,
+                "Adaptive Effort Suggestion", new VBox(8, new Label("Select a task to request an effort suggestion."), effortForm),
                 suggestEffortButton, applyEffortButton);
 
         TextArea scheduleQuestion = new TextArea();
@@ -550,7 +604,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         aiOutput.setWrapText(true);
         aiOutput.setPrefRowCount(7);
         Button explainButton = new Button("Explain Schedule");
-        explainButton.setDisable(!aiAvailable || displayedSchedule == null);
+        explainButton.disableProperty().bind(scheduleQuestion.textProperty().isEmpty()
+                .or(javafx.beans.binding.Bindings.createBooleanBinding(
+                        () -> scheduleQuestion.getText().isBlank(), scheduleQuestion.textProperty()))
+                .or(aiBusy).or(new javafx.beans.property.SimpleBooleanProperty(!aiAvailable || displayedSchedule == null || lastInfeasibility != null)));
         explainButton.setOnAction(event -> {
             String question = scheduleQuestion.getText() == null
                     ? "" : scheduleQuestion.getText().trim();
@@ -569,19 +626,23 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         });
 
         Button recoveryButton = new Button("Suggest Workload Recovery");
-        recoveryButton.setDisable(!aiAvailable || lastInfeasibility == null);
-        recoveryButton.setOnAction(event -> runAiAction(
-                recoveryButton,
-                "Generating recovery suggestions...",
-                () -> controller.requestRecoverySuggestions(lastInfeasibility),
-                recovery -> {
-                    aiOutput.setText(formatRecoveryPlan(recovery));
-                    statusLabel.setText(
-                            "Recovery advice ready; no action was applied");
-                }));
+        recoveryButton.disableProperty().bind(aiBusy.or(new javafx.beans.property.SimpleBooleanProperty(!aiAvailable || lastInfeasibility == null)));
+        recoveryButton.setOnAction(event -> {
+            ScheduleInfeasibleException requestedFor = lastInfeasibility;
+            runAiAction(recoveryButton, "Generating recovery suggestions...",
+                    () -> controller.requestRecoverySuggestions(requestedFor), recovery -> {
+                        if (lastInfeasibility != requestedFor) {
+                            aiOutput.setText("Planning data changed. Generate or replan again before requesting fresh recovery advice.");
+                            return;
+                        }
+                        aiOutput.setText(formatRecoveryPlan(recovery));
+                        statusLabel.setText("Recovery advice ready; choose whether to apply a change.");
+                        showRecoveryDialog(recovery);
+                    });
+        });
 
         Button recommendReplanButton = new Button("Recommend Replan Option");
-        recommendReplanButton.setDisable(!aiAvailable || displayedSchedule == null);
+        recommendReplanButton.disableProperty().bind(aiBusy.or(new javafx.beans.property.SimpleBooleanProperty(!aiAvailable || displayedSchedule == null)));
         Button applyReplanButton = new Button("Apply Recommended Replan");
         applyReplanButton.setDisable(pendingReplanRecommendation == null);
         recommendReplanButton.setOnAction(event -> runAiAction(
@@ -604,11 +665,13 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             pendingReplanRecommendation = null;
         });
 
-        HBox scheduleActions = new HBox(
-                8, explainButton, recoveryButton,
+        javafx.scene.layout.FlowPane scheduleActions = new javafx.scene.layout.FlowPane(
+                8, 8, explainButton, recoveryButton,
                 recommendReplanButton, applyReplanButton);
         VBox scheduleAiPanel = new VBox(
-                8, new Label("Schedule question:"), scheduleQuestion,
+                8, new Label(displayedSchedule == null ? "Generate a schedule first to ask questions or request replanning." : "Ask about your current schedule."),
+                new Label(lastInfeasibility == null ? "Recovery suggestions appear after an infeasible schedule is detected." : "An infeasible schedule was detected; recovery advice is available."),
+                new Label("Schedule question:"), scheduleQuestion,
                 scheduleActions, new Label("AI response:"), aiOutput);
         VBox.setVgrow(aiOutput, Priority.ALWAYS);
         VBox schedulePanel = createEditor(
@@ -743,27 +806,66 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private Node createSchedulePage() {
         DatePicker startField = new DatePicker(planningStart);
         DatePicker endField = new DatePicker(planningEnd);
+        startField.valueProperty().addListener((obs, oldDate, newDate) -> { if (newDate != null) planningStart = newDate; });
+        endField.valueProperty().addListener((obs, oldDate, newDate) -> { if (newDate != null) planningEnd = newDate; });
         Button generateButton = new Button("Generate Schedule");
+        generateButton.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
         generateButton.setOnAction(event -> generateSchedule(startField, endField));
 
-        HBox controls = new HBox(
-                10, new Label("Start:"), startField,
+        javafx.scene.layout.FlowPane controls = new javafx.scene.layout.FlowPane(
+                10, 10, new Label("Start:"), startField,
                 new Label("End:"), endField, generateButton);
         controls.setAlignment(Pos.CENTER_LEFT);
 
         Button replanButton = new Button("Replan remaining work");
+        replanButton.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
         replanButton.setDisable(displayedSchedule == null);
-        replanButton.setOnAction(event -> replanSchedule(
-                ReplanOption.RESCHEDULE_INCOMPLETE_WORK));
+        replanButton.setOnAction(event -> {
+            if (displayedSchedule != null
+                    && (!java.util.Objects.equals(startField.getValue(), displayedSchedule.getStartDate())
+                    || !java.util.Objects.equals(endField.getValue(), displayedSchedule.getEndDate()))) {
+                generateSchedule(startField, endField);
+            } else {
+                replanSchedule(ReplanOption.RESCHEDULE_INCOMPLETE_WORK);
+            }
+        });
 
-        ListView<String> blockList = new ListView<>(FXCollections.observableArrayList(
-                scheduleBlocks().stream().map(this::formatStudyBlock).toList()));
-        blockList.setPlaceholder(new Label(
-                displayedSchedule == null
-                        ? "Choose a planning window and generate a schedule."
-                        : "No study blocks were needed for this window."));
+        Button resolveButton = new Button("Resolve unscheduled work");
+        resolveButton.setDisable(lastInfeasibility == null);
+        resolveButton.setOnAction(event -> showRecoveryDialog(null));
 
+        ListView<StudyBlock> blockList = createSessionList(upcomingSessions(displayedSchedule),
+                displayedSchedule == null ? "Choose dates and generate a schedule."
+                        : "No upcoming sessions. Review progress or add remaining work.");
+        ListView<StudyBlock> historicalList = createSessionList(historicalSessions(displayedSchedule),
+                "No reported sessions in this window.");
+        historicalList.setPrefHeight(220);
+        TitledPane history = new TitledPane("Retained session history (" + historicalList.getItems().size()
+                + ") — confirm or correct in Progress", historicalList);
+        history.setExpanded(false);
+
+        Label inputs = new Label();
+        inputs.setWrapText(true);
+        Runnable refreshInputs = () -> {
+            LocalDate start = startField.getValue();
+            LocalDate end = endField.getValue();
+            if (start == null || end == null || end.isBefore(start)) {
+                inputs.setText("Choose a valid planning date range.");
+                return;
+            }
+            long availableCount = controller.getAvailability(start.atStartOfDay(), end.plusDays(1).atStartOfDay())
+                    .stream().filter(b -> b.getType() == AvailabilityType.AVAILABLE
+                            && b.getEnd().isAfter(LocalDateTime.now())).count();
+            long deferredCount = controller.getOpenTasks().stream().filter(t -> t.getDeferredUntil() != null
+                    && !t.getDeferredUntil().isBefore(end.plusDays(1).atStartOfDay())).count();
+            inputs.setText(controller.getOpenTasks().size() + " unfinished task(s), " + deferredCount + " deferred from this window; " + availableCount
+                    + " study window(s) with future time in these dates. Elapsed time is excluded; work must fit before each deadline.");
+        };
+        startField.valueProperty().addListener((obs, oldDate, newDate) -> refreshInputs.run());
+        endField.valueProperty().addListener((obs, oldDate, newDate) -> refreshInputs.run());
+        refreshInputs.run();
         Label summary = new Label(scheduleSummary());
+        summary.setWrapText(true);
         Label warning = new Label(scheduleWarningText());
         warning.setWrapText(true);
         warning.setStyle("-fx-text-fill: #9a5a00; -fx-font-weight: bold;");
@@ -798,10 +900,9 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 "Optional schedule preferences", preferenceEditor);
         preferenceDetails.setExpanded(false);
 
-        HBox scheduleContent = new HBox(20, blockList, preferenceDetails);
-        HBox.setHgrow(blockList, Priority.ALWAYS);
+        VBox scheduleContent = new VBox(14, new Label("Upcoming sessions"), blockList, history, preferenceDetails);
         VBox content = new VBox(
-                12, controls, replanButton, summary, warning, scheduleContent);
+                12, controls, inputs, replanButton, summary, warning, resolveButton, scheduleContent);
         VBox.setVgrow(scheduleContent, Priority.ALWAYS);
         return createPage(
                 "Schedule", "Generate a deterministic schedule for a planning window.",
@@ -817,6 +918,9 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                         "Planning end date cannot be before the start date.");
             }
 
+            if (controller.getOpenTasks().isEmpty()) {
+                throw new IllegalStateException("No unfinished tasks are available to schedule. Add a task with remaining effort first.");
+            }
             scheduleGenerationInProgress = true;
             displayedSchedule = controller.generateSchedule(planningStart, planningEnd);
             scheduleWarning = "";
@@ -829,13 +933,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             displayedSchedule = exception.getPartialSchedule();
             lastInfeasibility = exception;
             pendingReplanRecommendation = null;
-            scheduleWarning = String.format(
-                    "The full workload does not fit. %.2f hours remain unscheduled; "
-                            + "the blocks below are the feasible partial schedule.",
-                    exception.getWorkloadDeficitHours());
+            scheduleWarning = partialPlanMessage(exception);
             scheduleMayBeOutdated = false;
             showPage(Page.SCHEDULE);
-            statusLabel.setText("Schedule is infeasible");
+            statusLabel.setText("Partial plan saved — more available study time is needed.");
         } catch (RuntimeException exception) {
             showError(errorMessage(exception));
         } finally {
@@ -855,20 +956,17 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             lastInfeasibility = null;
             pendingReplanRecommendation = null;
             showPage(Page.SCHEDULE);
-            statusLabel.setText("Replan option applied");
+            statusLabel.setText("Remaining work replanned. Unchanged inputs may produce the same session times; reported sessions are kept in history.");
         } catch (ScheduleInfeasibleException exception) {
             displayedSchedule = exception.getPartialSchedule();
             lastInfeasibility = exception;
             pendingReplanRecommendation = null;
             planningStart = displayedSchedule.getStartDate();
             planningEnd = displayedSchedule.getEndDate();
-            scheduleWarning = String.format(
-                    "The replanned workload does not fit. %.2f hours remain "
-                            + "unscheduled; the feasible partial schedule is shown.",
-                    exception.getWorkloadDeficitHours());
+            scheduleWarning = partialPlanMessage(exception);
             scheduleMayBeOutdated = false;
             showPage(Page.SCHEDULE);
-            statusLabel.setText("Replanned schedule is infeasible");
+            statusLabel.setText("Partial replan saved. Your recorded progress is preserved.");
         } catch (RuntimeException exception) {
             showError(errorMessage(exception));
         } finally {
@@ -876,107 +974,230 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         }
     }
 
-    private Node createProgressPage() {
-        List<StudyBlock> blocks = scheduleBlocks();
-        ListView<String> blockList = new ListView<>(FXCollections.observableArrayList(
-                blocks.stream().map(this::formatProgressBlock).toList()));
-        blockList.setPlaceholder(new Label(
-                "Generate a schedule before recording progress."));
-        ListView<String> historyList = new ListView<>();
-        historyList.setPlaceholder(new Label(
-                "Select a study block to view its task history."));
-        Runnable refreshHistory = () -> {
-            int index = blockList.getSelectionModel().getSelectedIndex();
-            if (index < 0 || index >= blocks.size()) {
-                historyList.getItems().clear();
-                return;
-            }
-            historyList.setItems(FXCollections.observableArrayList(
-                    controller.getProgressHistory(blocks.get(index).getTask())
-                            .stream()
-                            .map(this::formatProgressRecord)
-                            .toList()));
-        };
-        blockList.getSelectionModel().selectedIndexProperty().addListener(
-                (observable, oldIndex, newIndex) -> refreshHistory.run());
+    private boolean confirmChange(String title, String explanation) {
+        javafx.scene.control.Alert dialog = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.CONFIRMATION);
+        dialog.initOwner(mainStage); dialog.setTitle("Confirm change");
+        dialog.setHeaderText(title); dialog.setContentText(explanation);
+        return dialog.showAndWait().orElse(javafx.scene.control.ButtonType.CANCEL) == javafx.scene.control.ButtonType.OK;
+    }
 
-        Label selectionHelp = new Label(
-                "Select a study block, then record its result.");
+    private void showRecoveryDialog(RecoveryPlan advice) {
+        ScheduleInfeasibleException failure = lastInfeasibility;
+        if (failure == null) { showError("Generate or replan an infeasible schedule first."); return; }
+        Schedule partial = failure.getPartialSchedule();
+        var dialog = new javafx.scene.control.Dialog<com.planpilot.service.RecoveryRequest>();
+        dialog.initOwner(mainStage); dialog.setTitle("Resolve unscheduled work");
+        dialog.setHeaderText(String.format("%.2f hours need a recovery choice", failure.getWorkloadDeficitHours()));
+        var apply = new javafx.scene.control.ButtonType("Apply change and replan", javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(apply, javafx.scene.control.ButtonType.CANCEL);
+        ComboBox<com.planpilot.ai.RecoveryAction> action = new ComboBox<>(
+                FXCollections.observableArrayList(com.planpilot.ai.RecoveryAction.values()));
+        action.setConverter(new StringConverter<>() {
+            @Override public String toString(com.planpilot.ai.RecoveryAction value) {
+                if (value == null) return "";
+                return switch (value) {
+                    case ADD_AVAILABILITY -> "Add available time";
+                    case EXTEND_PLANNING_WINDOW -> "Extend the planning window";
+                    case DEFER_LOWER_PRIORITY_TASK -> "Leave a selected task out of this plan";
+                    case KEEP_CURRENT_CONSTRAINTS -> "Keep the current partial plan";
+                };
+            }
+            @Override public com.planpilot.ai.RecoveryAction fromString(String text) { return null; }
+        });
+        action.setValue(advice == null ? com.planpilot.ai.RecoveryAction.ADD_AVAILABILITY : advice.suggestions().get(0).action());
+        LocalDate suggestedDate = LocalDate.now().isBefore(partial.getStartDate()) ? partial.getStartDate() : LocalDate.now();
+        if (suggestedDate.isAfter(partial.getEndDate())) suggestedDate = partial.getEndDate();
+        DatePicker date = new DatePicker(suggestedDate);
+        TextField start = new TextField(); TextField end = new TextField();
+        start.setPromptText("e.g. 09:00"); end.setPromptText("e.g. 11:00");
+        GridPane availability = createFormGrid();
+        addFormRow(availability, 0, "Date", date); addFormRow(availability, 1, "Start (24h)", start);
+        addFormRow(availability, 2, "End (24h)", end);
+        DatePicker newEnd = new DatePicker(partial.getEndDate().plusDays(1));
+        GridPane extension = createFormGrid(); addFormRow(extension, 0, "New planning end", newEnd);
+        ComboBox<Task> task = new ComboBox<>(FXCollections.observableArrayList(controller.getOpenTasks().stream()
+                .filter(t -> t.getDeferredUntil() == null || t.getDeferredUntil().isBefore(partial.getEndDate().plusDays(1).atStartOfDay()))
+                .sorted(java.util.Comparator.comparing(Task::getUserImportance)).toList()));
+        task.setConverter(taskConverter());
+        task.setPromptText("Choose a lower-priority task");
+        GridPane deferral = createFormGrid(); addFormRow(deferral, 0, "Task to defer", task);
+        Label impact = new Label(); impact.setWrapText(true);
+        Label error = new Label(); error.setWrapText(true); error.setStyle("-fx-text-fill: #a52828;");
+        Runnable refresh = () -> {
+            boolean adding = action.getValue() == com.planpilot.ai.RecoveryAction.ADD_AVAILABILITY;
+            boolean extending = action.getValue() == com.planpilot.ai.RecoveryAction.EXTEND_PLANNING_WINDOW;
+            boolean deferring = action.getValue() == com.planpilot.ai.RecoveryAction.DEFER_LOWER_PRIORITY_TASK;
+            availability.setVisible(adding); availability.setManaged(adding);
+            extension.setVisible(extending); extension.setManaged(extending);
+            deferral.setVisible(deferring); deferral.setManaged(deferring);
+            impact.setText(adding ? "Adds available time and replans. No deadline changes."
+                    : extending ? "Changes the planning window only. Add availability on new dates if needed; task deadlines stay unchanged."
+                    : deferring ? (task.getValue() == null ? "The selected task stays unfinished and keeps its deadline. "
+                            : task.getValue().getTitle() + " stays unfinished. Its deadline remains " + task.getValue().getDeadline() + ". ") + "It is excluded until "
+                            + partial.getEndDate().plusDays(1) + ". If its deadline is earlier, it can become overdue. Resume it in Tasks."
+                    : "Keep all current constraints and the partial plan. No regeneration.");
+            ((Button) dialog.getDialogPane().lookupButton(apply)).setText(
+                    action.getValue() == com.planpilot.ai.RecoveryAction.KEEP_CURRENT_CONSTRAINTS ? "Keep current plan" : "Apply change and replan");
+            error.setText("");
+        };
+        action.setOnAction(event -> refresh.run());
+        task.valueProperty().addListener((obs, oldTask, newTask) -> refresh.run());
+        refresh.run();
+        Label adviceText = new Label(advice == null ? "Choose a change to review. Nothing is applied until you confirm."
+                : formatRecoveryPlan(advice));
+        adviceText.setWrapText(true);
+        VBox content = new VBox(12, adviceText, new Label("Recovery action"), action, availability, extension, deferral, impact, error);
+        content.setPrefWidth(510);
+        ScrollPane recoveryScroll = new ScrollPane(content);
+        recoveryScroll.setFitToWidth(true); recoveryScroll.setPrefViewportHeight(420);
+        dialog.setResizable(true); dialog.getDialogPane().setContent(recoveryScroll);
+        com.planpilot.service.RecoveryRequest[] reviewed = {null};
+        dialog.getDialogPane().lookupButton(apply).addEventFilter(javafx.event.ActionEvent.ACTION, event -> {
+            try {
+                AvailabilityBlock block = action.getValue() == com.planpilot.ai.RecoveryAction.ADD_AVAILABILITY
+                        ? new AvailabilityBlock(combineDateAndTime(date, start, "Start"), combineDateAndTime(date, end, "End"), AvailabilityType.AVAILABLE) : null;
+                String taskId = action.getValue() == com.planpilot.ai.RecoveryAction.DEFER_LOWER_PRIORITY_TASK
+                        ? requiredValue(task.getValue(), "Task to defer").getId() : null;
+                var request = new com.planpilot.service.RecoveryRequest(partial.getId(), action.getValue(), block,
+                        action.getValue() == com.planpilot.ai.RecoveryAction.EXTEND_PLANNING_WINDOW
+                                ? requiredValue(newEnd.getValue(), "New planning end") : null, taskId);
+                if (request.newEndDate() != null && !request.newEndDate().isAfter(partial.getEndDate()))
+                    throw new IllegalArgumentException("Choose an end date later than the current planning window.");
+                reviewed[0] = request;
+            } catch (RuntimeException invalid) { error.setText(errorMessage(invalid)); event.consume(); }
+        });
+        dialog.setResultConverter(button -> button == apply ? reviewed[0] : null);
+        dialog.showAndWait().ifPresent(this::applyRecovery);
+    }
+
+    private void applyRecovery(com.planpilot.service.RecoveryRequest request) {
+        scheduleGenerationInProgress = true;
+        try {
+            displayedSchedule = controller.applyRecovery(request);
+            planningStart = displayedSchedule.getStartDate(); planningEnd = displayedSchedule.getEndDate();
+            if (request.action() != com.planpilot.ai.RecoveryAction.KEEP_CURRENT_CONSTRAINTS) {
+                lastInfeasibility = null; scheduleWarning = ""; scheduleMayBeOutdated = false;
+            }
+            showPage(Page.SCHEDULE); statusLabel.setText("Recovery choice applied by your request.");
+        } catch (ScheduleInfeasibleException failure) {
+            displayedSchedule = failure.getPartialSchedule(); lastInfeasibility = failure;
+            planningStart = displayedSchedule.getStartDate(); planningEnd = displayedSchedule.getEndDate();
+            scheduleWarning = partialPlanMessage(failure); scheduleMayBeOutdated = false;
+            showPage(Page.SCHEDULE); statusLabel.setText("Change applied; some work still needs recovery.");
+        } catch (RuntimeException failure) { showError(errorMessage(failure)); }
+        finally { scheduleGenerationInProgress = false; }
+    }
+
+    private void refreshInferredProgress() {
+        try { controller.refreshProgress(); }
+        catch (RuntimeException failure) { showError(errorMessage(failure)); }
+    }
+
+    private Node createProgressPage() {
+        List<Task> tasks = controller.getTasks();
+        List<StudyBlock> blocks = controller.getProgressSessions();
+        double planned = blocks.stream().mapToDouble(StudyBlock::durationHours).sum();
+        double confirmed = tasks.stream().mapToDouble(controller::getConfirmedHours).sum();
+        double inferred = tasks.stream().mapToDouble(controller::getInferredHours).sum();
+        double remaining = tasks.stream().mapToDouble(Task::getRemainingHours).sum();
+        long completedTasks = tasks.stream().filter(t -> controller.getConfirmedHours(t) >= t.getEstimatedHours()).count();
+        long awaiting = blocks.stream().filter(b -> !b.getEnd().isAfter(LocalDateTime.now())
+                && (b.isInferred() || b.getProgressStatus() == ProgressStatus.PLANNED)).count();
+        HBox totals = new HBox(12, metricCard(String.format("%.1f h", planned), "Planned study hours"),
+                metricCard(String.format("%.1f h", confirmed), "Confirmed completed"),
+                metricCard(String.format("%.1f h", remaining), "Remaining effort"));
+        HBox outcomes = new HBox(12, metricCard(completedTasks + " / " + tasks.size(), "Confirmed complete tasks"),
+                metricCard(Long.toString(tasks.size() - completedTasks), "Incomplete / unconfirmed tasks"),
+                metricCard(Long.toString(awaiting), "Sessions awaiting confirmation"));
+        Label inferenceNote = new Label(String.format(
+                "%.1f h tentatively inferred from elapsed sessions. Remaining effort includes these assumptions; confirm or correct each session below. No schedule is regenerated automatically.", inferred));
+        inferenceNote.setWrapText(true);
+        inferenceNote.getStyleClass().add("page-instruction");
+
+        VBox taskCards = new VBox(10);
+        if (tasks.isEmpty()) taskCards.getChildren().add(new Label("Add tasks to see progress."));
+        for (Task task : tasks) {
+            double confirmedHours = controller.getConfirmedHours(task);
+            double inferredHours = controller.getInferredHours(task);
+            String title = task instanceof AcademicTask academic
+                    ? academic.getCourse().getCode() + ": " + task.getTitle() : task.getTitle();
+            Label taskTitle = new Label(title);
+            taskTitle.getStyleClass().add("step-title");
+            javafx.scene.control.ProgressBar bar = new javafx.scene.control.ProgressBar(
+                    Math.min(1, confirmedHours / task.getEstimatedHours()));
+            bar.setMaxWidth(Double.MAX_VALUE);
+            Label detail = new Label(String.format(
+                    "Original estimate %.1f h · Current estimate %.1f h · Confirmed %.1f h · Inferred %.1f h · Remaining %.1f h",
+                    controller.getOriginalEstimate(task), task.getEstimatedHours(), confirmedHours,
+                    inferredHours, task.getRemainingHours()));
+            detail.setWrapText(true);
+            Label status = new Label("Status: " + task.getStatus()
+                    + (inferredHours > 0 ? " (includes tentative progress)" : "")
+                    + (task.getDeferredUntil() == null ? "" : " · Deferred until " + task.getDeferredUntil().toLocalDate())
+                    + " · Deadline: " + task.getDeadline().format(DateTimeFormatter.ofPattern("MMM d, yyyy h:mm a")));
+            status.setWrapText(true);
+            VBox card = new VBox(7, taskTitle, bar, detail, status);
+            card.getStyleClass().add("panel"); taskCards.getChildren().add(card);
+        }
+
+        ListView<StudyBlock> blockList = createSessionList(blocks, "Generate a schedule first to record study progress.");
+        ListView<String> historyList = new ListView<>();
+        historyList.setPrefHeight(200);
+        historyList.setPlaceholder(new Label("Select a session to see its task's correction history."));
+        Label selectionHelp = new Label("Select a session to confirm or correct its result.");
         selectionHelp.setWrapText(true);
         TextField partialHoursField = new TextField();
-        partialHoursField.setPromptText("Hours completed");
-
-        Button completedButton = new Button("Completed");
-        completedButton.setMaxWidth(Double.MAX_VALUE);
+        partialHoursField.setPromptText("Actual hours, from 0 to session duration");
+        Button completedButton = new Button("Confirm completed");
+        Button partialButton = new Button("Save actual hours");
+        Button skippedButton = new Button("Mark skipped");
         completedButton.setOnAction(event -> {
             StudyBlock block = selectedBlock(blockList, blocks);
-            if (block != null) {
-                recordProgress(block, ProgressStatus.COMPLETED,
-                        block.durationHours(), "Work marked completed");
-            }
+            if (block != null) recordProgress(block, ProgressStatus.COMPLETED, block.durationHours(), "Session confirmed completed");
         });
-
-        Button partialButton = new Button("Partially Completed");
-        partialButton.setMaxWidth(Double.MAX_VALUE);
         partialButton.setOnAction(event -> {
             StudyBlock block = selectedBlock(blockList, blocks);
             if (block != null) {
-                try {
-                    double hours = positiveDouble(
-                            partialHoursField, "Completed hours");
-                    recordProgress(block, ProgressStatus.PARTIAL, hours,
-                            "Partial progress recorded");
-                } catch (RuntimeException exception) {
-                    showError(errorMessage(exception));
-                }
+                try { recordProgress(block, ProgressStatus.PARTIAL, nonNegativeDouble(partialHoursField, "Actual completed hours"), "Actual hours saved"); }
+                catch (RuntimeException failure) { showError(errorMessage(failure)); }
             }
         });
-
-        Button skippedButton = new Button("Skipped");
-        skippedButton.setMaxWidth(Double.MAX_VALUE);
         skippedButton.setOnAction(event -> {
             StudyBlock block = selectedBlock(blockList, blocks);
-            if (block != null) {
-                recordProgress(block, ProgressStatus.SKIPPED, 0,
-                        "Work marked skipped");
-            }
+            if (block != null) recordProgress(block, ProgressStatus.SKIPPED, 0, "Session marked skipped");
         });
-
-        Label warning = new Label(scheduleMayBeOutdated && displayedSchedule != null
-                ? "Planning data changed. This schedule may be outdated; "
-                        + "replanning still requires user action."
-                : "");
-        warning.setWrapText(true);
-        warning.setStyle("-fx-text-fill: #9a5a00; -fx-font-weight: bold;");
-        warning.setVisible(!warning.getText().isBlank());
-        warning.setManaged(warning.isVisible());
-
-        VBox editor = new VBox(
-                10, selectionHelp, new Label("Partial hours:"), partialHoursField,
-                completedButton, partialButton, skippedButton);
-        editor.setPrefWidth(240);
-        boolean noBlocks = blocks.isEmpty();
-        completedButton.setDisable(noBlocks);
-        partialButton.setDisable(noBlocks);
-        skippedButton.setDisable(noBlocks);
-
-        VBox historyPanel = new VBox(
-                8, new Label("Progress History for Selected Task"), historyList);
-        historyPanel.setPrefWidth(340);
-        VBox.setVgrow(historyList, Priority.ALWAYS);
-        HBox main = new HBox(20, blockList, editor, historyPanel);
-        HBox.setHgrow(blockList, Priority.ALWAYS);
-        VBox content = new VBox(12, warning, main);
-        VBox.setVgrow(main, Priority.ALWAYS);
-        if (!blocks.isEmpty()) {
-            blockList.getSelectionModel().selectFirst();
+        for (Button button : List.of(completedButton, partialButton, skippedButton)) {
+            button.disableProperty().bind(blockList.getSelectionModel().selectedItemProperty().isNull());
         }
-        return createPage(
-                "Progress", "Record outcomes for scheduled study blocks.", content);
+        blockList.getSelectionModel().selectedIndexProperty().addListener((obs, oldIndex, newIndex) -> {
+            int index = newIndex.intValue(); if (index < 0 || index >= blocks.size()) return;
+            StudyBlock block = blocks.get(index); selectedProgressSessionId = block.getId();
+            selectionHelp.setText(String.format("%s · %.2f h session. %s", block.getTask().getTitle(), block.durationHours(),
+                    block.isInferred() ? "Tentatively inferred — awaiting your confirmation." : "Save a correction to replace this session's previous result."));
+            partialHoursField.clear();
+            historyList.setItems(FXCollections.observableArrayList(controller.getProgressHistory(block.getTask())
+                    .stream().map(this::formatProgressRecord).toList()));
+        });
+        for (int index = 0; index < blocks.size(); index++) {
+            if (blocks.get(index).getId().equals(selectedProgressSessionId)) blockList.getSelectionModel().select(index);
+        }
+        if (blockList.getSelectionModel().isEmpty() && !blocks.isEmpty()) blockList.getSelectionModel().selectFirst();
+        VBox editor = createEditor("Session result", new VBox(8, selectionHelp,
+                new Label("Partially completed — actual hours:"), partialHoursField),
+                completedButton, partialButton, skippedButton);
+        HBox sessionsPanel = new HBox(16, blockList, editor);
+        HBox.setHgrow(blockList, Priority.ALWAYS);
+        Label warning = new Label(scheduleMayBeOutdated ? "Workload changed. Review Schedule and replan when you choose." : "");
+        warning.setWrapText(true);
+        VBox content = new VBox(16, totals, outcomes, inferenceNote, warning,
+                new Label("Task progress (bars show confirmed hours)"), taskCards,
+                new Label("Study sessions — select one to record or correct"), sessionsPanel,
+                new Label("History for selected task"), historyList);
+        return createPage("Progress", "Review confirmed work, tentative progress, and remaining effort.", content);
     }
 
     private StudyBlock selectedBlock(
-            ListView<String> blockList, List<StudyBlock> blocks) {
+            ListView<?> blockList, List<StudyBlock> blocks) {
         int selectedIndex = blockList.getSelectionModel().getSelectedIndex();
         if (selectedIndex < 0 || selectedIndex >= blocks.size()) {
             showError("Select a study block first.");
@@ -1002,9 +1223,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         if (displayedSchedule == null) {
             return "No schedule has been generated.";
         }
-        return displayedSchedule.getStartDate() + " to "
-                + displayedSchedule.getEndDate() + " | "
-                + scheduleBlocks().size() + " study block(s) | "
+        return "Planning window: " + displayedSchedule.getStartDate() + " to "
+                + displayedSchedule.getEndDate() + "\n"
+                + upcomingSessions(displayedSchedule).size() + " upcoming session(s), "
+                + historicalSessions(displayedSchedule).size() + " retained history session(s) · State: "
                 + displayedSchedule.getStatus();
     }
 
@@ -1021,25 +1243,71 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 : scheduleWarning + " " + outdatedWarning;
     }
 
-    private String formatStudyBlock(StudyBlock block) {
-        return block.getStart() + " to " + block.getEnd().toLocalTime()
-                + " | " + block.getTask().getTitle()
-                + " | " + String.format("%.2fh", block.durationHours());
+    static String partialPlanMessage(ScheduleInfeasibleException failure) {
+        double scheduledHours = upcomingSessions(failure.getPartialSchedule()).stream()
+                .mapToDouble(StudyBlock::durationHours).sum();
+        return String.format("Partial plan saved: %.2f hours of remaining work scheduled; %.2f hours still unscheduled. "
+                        + "Your recorded progress is preserved. Add available study time before the task deadlines, then replan. ",
+                scheduledHours, failure.getWorkloadDeficitHours()) + failure.getMessage();
     }
 
-    private String formatProgressBlock(StudyBlock block) {
-        Task task = block.getTask();
-        return formatStudyBlock(block)
-                + " | block: " + block.getProgressStatus()
-                + " | task: " + String.format(
-                        "%.2f/%.2fh (%s)", task.getCompletedHours(),
-                        task.getEstimatedHours(), task.getStatus());
+    static List<StudyBlock> upcomingSessions(Schedule schedule) {
+        return schedule == null ? List.of() : schedule.getStudyBlocks().stream()
+                .filter(b -> b.getProgressStatus() == ProgressStatus.PLANNED).toList();
+    }
+
+    static List<StudyBlock> historicalSessions(Schedule schedule) {
+        return schedule == null ? List.of() : schedule.getStudyBlocks().stream()
+                .filter(b -> b.getProgressStatus() != ProgressStatus.PLANNED).toList();
+    }
+
+    static String taskColour(Task task) {
+        String[] palette = {"#3568df", "#008575", "#a047b3", "#b35a18", "#c04766", "#53668c"};
+        return palette[Math.floorMod(task.getId().hashCode(), palette.length)];
+    }
+
+    private ListView<StudyBlock> createSessionList(List<StudyBlock> blocks, String emptyMessage) {
+        ListView<StudyBlock> list = new ListView<>(FXCollections.observableArrayList(blocks));
+        list.setMinHeight(240); list.setPrefHeight(400);
+        Label empty = new Label(emptyMessage); empty.setWrapText(true); list.setPlaceholder(empty);
+        list.setCellFactory(view -> new ListCell<>() {
+            @Override protected void updateItem(StudyBlock block, boolean empty) {
+                super.updateItem(block, empty);
+                setText(null);
+                if (empty || block == null) { setGraphic(null); return; }
+                Task task = block.getTask();
+                Label session = new Label("Session " + (getIndex() + 1));
+                session.getStyleClass().add("session-number");
+                Label title = new Label(task instanceof AcademicTask academic
+                        ? academic.getCourse().getCode() + ": " + task.getTitle() : task.getTitle());
+                title.setWrapText(true); title.getStyleClass().add("session-title");
+                String time = block.getStart().format(DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a"))
+                        + " – " + block.getEnd().format(DateTimeFormatter.ofPattern("h:mm a"));
+                Label timing = new Label(time); timing.setWrapText(true);
+                Label duration = new Label(String.format("%.2f hours", block.durationHours()));
+                String outcome = block.isInferred() ? "Tentative — awaiting confirmation"
+                        : switch (block.getProgressStatus()) {
+                            case PLANNED -> "Planned";
+                            case COMPLETED -> "Confirmed completed";
+                            case PARTIAL -> "Partially completed";
+                            case SKIPPED -> "Skipped";
+                        };
+                Label status = new Label(outcome); status.setWrapText(true);
+                VBox card = new VBox(5, session, title, timing, duration, status);
+                card.getStyleClass().add("session-card");
+                card.setStyle("-fx-border-color: " + taskColour(task) + ";");
+                card.prefWidthProperty().bind(view.widthProperty().subtract(40));
+                setGraphic(card);
+            }
+        });
+        return list;
     }
 
     private String formatProgressRecord(ProgressRecord record) {
-        return record.getRecordedAt() + " | " + record.getStatus()
-                + " | " + String.format(
-                        "%.2fh", record.getCompletedHours());
+        return record.getRecordedAt().format(DateTimeFormatter.ofPattern("MMM d, yyyy · h:mm a"))
+                + "\n" + (record.isInferred() ? "Tentative " : "Confirmed ")
+                + record.getStatus().name().toLowerCase(java.util.Locale.ROOT)
+                + String.format(" · %.2f hours", record.getCompletedHours());
     }
 
     private Node createManagementPage(
@@ -1055,7 +1323,13 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private VBox createEditor(String title, Node form, Node... actions) {
         Label heading = new Label(title);
         heading.setStyle("-fx-font-size: 16px; -fx-font-weight: bold;");
-        HBox actionBar = new HBox(8, actions);
+        javafx.scene.layout.FlowPane actionBar = new javafx.scene.layout.FlowPane(8, 8, actions);
+        for (Node action : actions) {
+            if (action instanceof Button button) {
+                button.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+                button.setWrapText(true);
+            }
+        }
         if (actionBar.getChildren().size() > 0
                 && actionBar.getChildren().get(0) instanceof Button primary) {
             primary.getStyleClass().add("primary-action");
@@ -1115,7 +1389,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             case COURSES -> "Add course code and name. Select a course below to edit or remove it; academic tasks use this list.";
             case TASKS -> "Start with task type, title, due date, and estimated hours. Academic tasks also need a course. Priority settings are optional.";
             case AVAILABILITY -> "Add time marked Available for study. To change an existing window, select it, edit the times, and press Save changes. Add classes and other commitments so the planner avoids them.";
-            case SCHEDULE -> "Add tasks and available time first. Choose a date range, then generate. Replan remaining work keeps completed sessions and rearranges the rest.";
+            case SCHEDULE -> "Choose dates and generate or replan remaining work. Only upcoming sessions appear below; reported sessions stay in retained history and Progress. Matching colours indicate the same task. Unchanged inputs can produce the same times.";
             case PROGRESS -> "Select a scheduled block and record what happened. For partial work, enter the hours completed. Progress changes never regenerate a schedule automatically.";
             case AI_ASSISTANT -> "AI tools are optional. Review estimates and schedule recommendations before applying them.";
         };
@@ -1136,7 +1410,10 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             String progressMessage,
             Supplier<T> operation,
             Consumer<T> onSuccess) {
-        trigger.setDisable(true);
+        if (aiBusy.get()) return;
+        aiBusy.set(true);
+        boolean bound = trigger.disableProperty().isBound();
+        if (!bound) trigger.setDisable(true);
         statusLabel.setText(progressMessage);
         javafx.concurrent.Task<T> backgroundTask = new javafx.concurrent.Task<>() {
             @Override
@@ -1145,11 +1422,17 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             }
         };
         backgroundTask.setOnSucceeded(event -> {
-            trigger.setDisable(false);
-            onSuccess.accept(backgroundTask.getValue());
+            aiBusy.set(false);
+            if (!bound) trigger.setDisable(false);
+            try {
+                onSuccess.accept(backgroundTask.getValue());
+            } catch (RuntimeException exception) {
+                showError(errorMessage(exception));
+            }
         });
         backgroundTask.setOnFailed(event -> {
-            trigger.setDisable(false);
+            aiBusy.set(false);
+            if (!bound) trigger.setDisable(false);
             showError(errorMessage(backgroundTask.getException()));
         });
         Thread worker = new Thread(backgroundTask, "planpilot-ai-request");
@@ -1228,21 +1511,13 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
     private void showError(String message) {
         Alert alert = new Alert(Alert.AlertType.ERROR);
+        alert.initOwner(mainStage);
+        alert.initModality(Modality.WINDOW_MODAL);
         alert.setTitle("PlanPilot Error");
         alert.setHeaderText("PlanPilot couldn't complete this action");
         alert.setContentText(message);
         alert.showAndWait();
         statusLabel.setText("Error: " + message);
-    }
-
-    private String formatTask(Task task) {
-        String course = task instanceof AcademicTask academicTask
-                ? academicTask.getCourse().getCode() + ": " : "Personal: ";
-        String deadline = task.getDeadline().format(
-                DateTimeFormatter.ofPattern("MMM d, h:mm a"));
-        return course + task.getTitle() + System.lineSeparator()
-                + "Due " + deadline + " · " + task.getStatus() + " · "
-                + String.format("%.1fh remaining", task.getRemainingHours());
     }
 
     private String formatAvailability(AvailabilityBlock block) {
@@ -1257,7 +1532,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             return "";
         }
         return switch (type) {
-            case AVAILABLE -> "Available study time";
+            case AVAILABLE -> "Available time";
             case CLASS -> "Class";
             case WORK -> "Work";
             case APPOINTMENT -> "Appointment";
@@ -1396,7 +1671,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     }
 
     private <T> T selectedItem(
-            ListView<String> listView, List<T> items, String itemName) {
+            ListView<?> listView, List<T> items, String itemName) {
         int index = listView.getSelectionModel().getSelectedIndex();
         if (index < 0 || index >= items.size()) {
             throw new IllegalArgumentException(

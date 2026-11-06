@@ -8,8 +8,12 @@ public class ScheduleInfeasibleException extends IllegalStateException {
 
     public ScheduleInfeasibleException(
             Schedule partialSchedule, double workloadDeficitHours) {
-        super("Schedule is infeasible; " + workloadDeficitHours
+        this(partialSchedule, workloadDeficitHours, "Schedule is infeasible; " + workloadDeficitHours
                 + " hours of work could not be scheduled.");
+    }
+
+    public ScheduleInfeasibleException(Schedule partialSchedule, double workloadDeficitHours, String reason) {
+        super(reason);
         this.partialSchedule = partialSchedule;
         this.workloadDeficitHours = workloadDeficitHours;
     }

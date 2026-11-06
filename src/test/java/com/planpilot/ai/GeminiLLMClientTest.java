@@ -71,9 +71,57 @@ class GeminiLLMClientTest {
                 LLMClientException.class,
                 () -> client.generateText("System", "Prompt"));
 
-        assertTrue(exception.getMessage().contains("HTTP 429"));
-        assertTrue(exception.getMessage().contains("Rate limit exceeded"));
+        assertTrue(exception.getMessage().contains("temporarily unavailable"));
         assertFalse(exception.getMessage().contains("secret-test-key"));
+    }
+
+    @Test
+    void retriesTransientStatusesWithBoundedBackoff() {
+        for (int status : new int[]{429, 500, 502, 503, 504}) {
+            java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.List<Long> waits = new java.util.ArrayList<>();
+            GeminiLLMClient client = new GeminiLLMClient("test-key", request -> {
+                calls.incrementAndGet();
+                return new GeminiLLMClient.TransportResponse(status, "{}");
+            }, objectMapper, waits::add);
+            assertTrue(assertThrows(LLMClientException.class,
+                    () -> client.generateText("system", "prompt")).getMessage().contains("temporarily unavailable"));
+            assertEquals(3, calls.get());
+            assertEquals(java.util.List.of(500L, 1000L), waits);
+        }
+    }
+
+    @Test
+    void succeedsAfterTransientFailureAndPreservesInterruption() {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        GeminiLLMClient client = new GeminiLLMClient("test-key", request ->
+                new GeminiLLMClient.TransportResponse(calls.getAndIncrement() == 0 ? 503 : 200,
+                        "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}]}"),
+                objectMapper, millis -> {});
+        assertEquals("ok", client.generateText("system", "prompt"));
+        assertEquals(2, calls.get());
+        GeminiLLMClient interrupted = new GeminiLLMClient("test-key", request ->
+                new GeminiLLMClient.TransportResponse(503, "{}"), objectMapper,
+                millis -> { throw new InterruptedException(); });
+        try {
+            assertThrows(LLMClientException.class, () -> interrupted.generateText("system", "prompt"));
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally { Thread.interrupted(); }
+    }
+
+    @Test
+    void doesNotRetryPermanentErrorsOrEchoServerContent() {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        GeminiLLMClient client = new GeminiLLMClient("secret-test-key", request -> {
+            calls.incrementAndGet();
+            return new GeminiLLMClient.TransportResponse(401,
+                    "{\"error\":{\"message\":\"secret-test-key sensitive request\"}}");
+        }, objectMapper, millis -> { throw new AssertionError("Must not back off for 401"); });
+        var failure = assertThrows(LLMClientException.class,
+                () -> client.generateText("system", "sensitive request"));
+        assertEquals(1, calls.get());
+        assertFalse(failure.getMessage().contains("secret-test-key"));
+        assertFalse(failure.getMessage().contains("sensitive request"));
     }
 
     @Test

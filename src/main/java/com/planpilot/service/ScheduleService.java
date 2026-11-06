@@ -25,6 +25,13 @@ public class ScheduleService {
     private final UserPreferences preferences;
     private final PlanningEventPublisher eventPublisher;
     private Schedule currentSchedule;
+    private boolean recoveryNeeded;
+    private final java.util.Map<String, StudyBlock> retainedSessions = new java.util.LinkedHashMap<>();
+
+    public void retainSessions(List<StudyBlock> sessions) {
+        sessions.stream().filter(b -> b.getProgressStatus() != ProgressStatus.PLANNED)
+                .forEach(b -> retainedSessions.put(b.getId(), b));
+    }
 
     public ScheduleService(
             TaskService taskService,
@@ -63,17 +70,32 @@ public class ScheduleService {
 
         LocalDateTime windowStart = start.atStartOfDay();
         LocalDateTime windowEnd = end.plusDays(1).atStartOfDay();
-        List<AvailabilityBlock> availability = availabilityService.getAvailability(
-                windowStart, windowEnd);
+        if (currentSchedule != null) retainSessions(currentSchedule.getStudyBlocks());
+        List<StudyBlock> preserved = retainedSessions.values().stream()
+                .filter(b -> !b.getStart().isBefore(windowStart) && !b.getEnd().isAfter(windowEnd)).toList();
+        List<AvailabilityBlock> availability = new ArrayList<>(availabilityService.getAvailability(windowStart, windowEnd));
+        for (StudyBlock block : preserved) availability.add(new AvailabilityBlock(
+                "history-" + block.getId(), block.getStart(), block.getEnd(), AvailabilityType.UNAVAILABLE));
         try {
-            currentSchedule = schedulePlanner.createSchedule(
-                    taskService.getOpenTasks(), availability, preferences, start, end);
+            currentSchedule = mergeCompletedBlocks(schedulePlanner.createSchedule(
+                    taskService.getOpenTasks(), availability, preferences, start, end), preserved);
+            recoveryNeeded = false;
         } catch (ScheduleInfeasibleException exception) {
-            currentSchedule = exception.getPartialSchedule();
+            recoveryNeeded = true;
+            currentSchedule = mergeCompletedBlocks(exception.getPartialSchedule(), preserved);
             eventPublisher.notifyObservers();
-            throw exception;
+            throw new ScheduleInfeasibleException(currentSchedule, exception.getWorkloadDeficitHours(), exception.getMessage());
         }
         eventPublisher.notifyObservers();
+        return currentSchedule;
+    }
+
+    public Schedule requireRecoverySchedule(String scheduleId) {
+        requireCurrentSchedule();
+        if (!recoveryNeeded || !currentSchedule.getId().equals(scheduleId)
+                || currentSchedule.getStatus() == ScheduleStatus.OUTDATED) {
+            throw new IllegalStateException("Planning data changed. Generate or replan again before applying recovery.");
+        }
         return currentSchedule;
     }
 
@@ -94,35 +116,7 @@ public class ScheduleService {
     }
 
     private Schedule rescheduleIncompleteWork() {
-        LocalDate start = currentSchedule.getStartDate();
-        LocalDate end = currentSchedule.getEndDate();
-        List<StudyBlock> completedBlocks = currentSchedule.getStudyBlocks().stream()
-                .filter(block -> block.getProgressStatus() == ProgressStatus.COMPLETED)
-                .toList();
-        LocalDateTime windowStart = start.atStartOfDay();
-        LocalDateTime windowEnd = end.plusDays(1).atStartOfDay();
-        List<AvailabilityBlock> availability = new ArrayList<>(
-                availabilityService.getAvailability(windowStart, windowEnd));
-        for (int index = 0; index < completedBlocks.size(); index++) {
-            StudyBlock block = completedBlocks.get(index);
-            availability.add(new AvailabilityBlock(
-                    currentSchedule.getId() + "-completed-commitment-" + (index + 1),
-                    block.getStart(), block.getEnd(), AvailabilityType.UNAVAILABLE));
-        }
-
-        try {
-            Schedule planned = schedulePlanner.createSchedule(
-                    taskService.getOpenTasks(), availability, preferences, start, end);
-            currentSchedule = mergeCompletedBlocks(planned, completedBlocks);
-        } catch (ScheduleInfeasibleException exception) {
-            currentSchedule = mergeCompletedBlocks(
-                    exception.getPartialSchedule(), completedBlocks);
-            eventPublisher.notifyObservers();
-            throw new ScheduleInfeasibleException(
-                    currentSchedule, exception.getWorkloadDeficitHours());
-        }
-        eventPublisher.notifyObservers();
-        return currentSchedule;
+        return generateSchedule(currentSchedule.getStartDate(), currentSchedule.getEndDate());
     }
 
     private Schedule mergeCompletedBlocks(
@@ -130,14 +124,7 @@ public class ScheduleService {
         Schedule merged = new Schedule(
                 planned.getId(), planned.getStartDate(), planned.getEndDate());
         List<StudyBlock> blocks = new ArrayList<>(planned.getStudyBlocks());
-        for (int index = 0; index < completedBlocks.size(); index++) {
-            StudyBlock completed = completedBlocks.get(index);
-            StudyBlock preserved = new StudyBlock(
-                    planned.getId() + "-completed-" + (index + 1),
-                    completed.getTask(), completed.getStart(), completed.getEnd());
-            preserved.markCompleted();
-            blocks.add(preserved);
-        }
+        blocks.addAll(completedBlocks);
         blocks.stream()
                 .sorted(Comparator.comparing(StudyBlock::getStart)
                         .thenComparing(StudyBlock::getId))
@@ -150,6 +137,10 @@ public class ScheduleService {
                 preferences.getMaxSessionLength(),
                 preferences.getPreferredStudyPeriod(),
                 preferences.getBreakLength());
+    }
+
+    public java.util.Optional<Schedule> findCurrentSchedule() {
+        return java.util.Optional.ofNullable(currentSchedule);
     }
 
     public Schedule getCurrentSchedule() {

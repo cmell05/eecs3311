@@ -9,7 +9,9 @@ import com.planpilot.domain.Task;
 import com.planpilot.domain.UserPreferences;
 import com.planpilot.strategy.PriorityStrategy;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -22,6 +24,7 @@ public class SchedulePlanner {
 
     private final PriorityStrategy priorityStrategy;
     private final ConflictDetector conflictDetector;
+    private final Clock clock;
 
     public SchedulePlanner(PriorityStrategy priorityStrategy) {
         this(priorityStrategy, new ConflictDetector());
@@ -29,6 +32,11 @@ public class SchedulePlanner {
 
     public SchedulePlanner(
             PriorityStrategy priorityStrategy, ConflictDetector conflictDetector) {
+        this(priorityStrategy, conflictDetector, Clock.systemDefaultZone());
+    }
+
+    public SchedulePlanner(PriorityStrategy priorityStrategy, ConflictDetector conflictDetector, Clock clock) {
+        this.clock = Objects.requireNonNull(clock, "Clock cannot be null.");
         this.priorityStrategy = Objects.requireNonNull(
                 priorityStrategy, "Priority strategy cannot be null.");
         this.conflictDetector = Objects.requireNonNull(
@@ -65,14 +73,22 @@ public class SchedulePlanner {
             LocalDate endDate) {
         validateInputs(tasks, availability, preferences, startDate, endDate);
 
-        String scheduleId = "schedule-" + startDate + "-" + endDate;
+        // Capture the cutoff once. Round up because effort and sessions use whole minutes.
+        LocalDateTime now = LocalDateTime.now(clock);
+        LocalDateTime earliestStart = now.truncatedTo(ChronoUnit.MINUTES);
+        if (earliestStart.isBefore(now)) earliestStart = earliestStart.plusMinutes(1);
+        List<TimeSlot> freeSlots = buildFreeTimeSlots(availability, startDate, endDate, earliestStart);
+        List<AvailabilityBlock> usableAvailability = freeSlots.stream()
+                .map(slot -> new AvailabilityBlock(slot.cursor, slot.end, AvailabilityType.AVAILABLE))
+                .toList();
+
+        String scheduleId = "schedule-" + java.util.UUID.randomUUID();
         Schedule schedule = new Schedule(scheduleId, startDate, endDate);
-        List<TimeSlot> slots = prioritizeStudyPeriod(
-                buildFreeTimeSlots(availability, startDate, endDate),
-                preferences.getPreferredStudyPeriod());
         List<Task> prioritizedTasks = tasks.stream()
-                .map(Objects::requireNonNull)
+                .<Task>map(Objects::requireNonNull)
                 .filter(task -> task.getRemainingHours() > EPSILON)
+                .filter(task -> task.getDeferredUntil() == null
+                        || task.getDeferredUntil().isBefore(endDate.plusDays(1).atStartOfDay()))
                 .sorted(Comparator
                         .comparingDouble(priorityStrategy::calculatePriority)
                         .reversed()
@@ -80,11 +96,29 @@ public class SchedulePlanner {
                         .thenComparing(Task::getId))
                 .toList();
 
+        // Partition at release times so deferred work cannot consume earlier slots
+        // that remain usable by other tasks.
+        List<TimeSlot> releasedSlots = new ArrayList<>(freeSlots);
+        for (Task task : prioritizedTasks) {
+            if (task.getDeferredUntil() == null) continue;
+            List<TimeSlot> partitioned = new ArrayList<>();
+            for (TimeSlot slot : releasedSlots) {
+                LocalDateTime release = task.getDeferredUntil();
+                if (slot.cursor.isBefore(release) && release.isBefore(slot.end)) {
+                    partitioned.add(new TimeSlot(slot.cursor, release));
+                    partitioned.add(new TimeSlot(release, slot.end));
+                } else partitioned.add(slot);
+            }
+            releasedSlots = partitioned;
+        }
+        List<TimeSlot> slots = prioritizeStudyPeriod(releasedSlots, preferences.getPreferredStudyPeriod());
+        List<String> reasons = new ArrayList<>();
         long unscheduledMinutes = 0;
         int blockNumber = 1;
         for (Task task : prioritizedTasks) {
             long remainingMinutes = (long) Math.ceil(task.getRemainingHours() * 60.0);
             for (TimeSlot slot : slots) {
+                if (task.getDeferredUntil() != null && slot.cursor.isBefore(task.getDeferredUntil())) continue;
                 if (remainingMinutes == 0) {
                     break;
                 }
@@ -108,6 +142,22 @@ public class SchedulePlanner {
                     slot.cursor = blockEnd.plusMinutes(preferences.getBreakLength());
                 }
             }
+            if (remainingMinutes > 0) {
+                String reason;
+                if (!task.getDeadline().isAfter(now)) {
+                    reason = "The task's deadline has already passed; no future study time can be assigned.";
+                } else if (!endDate.plusDays(1).atStartOfDay().isAfter(earliestStart)) {
+                    reason = "The selected planning window has already ended. Choose current or future dates.";
+                } else if (!task.getDeadline().isAfter(startDate.atStartOfDay())) {
+                    reason = "The deadline is before the planning window.";
+                } else if (buildFreeTimeSlots(availability, startDate, endDate, earliestStart).stream()
+                        .noneMatch(slot -> slot.cursor.isBefore(task.getDeadline()))) {
+                    reason = "No available study time exists before this task's deadline.";
+                } else {
+                    reason = "Not enough study time remains before the deadline, including session breaks.";
+                }
+                reasons.add(task.getTitle() + ": " + reason);
+            }
             unscheduledMinutes += remainingMinutes;
         }
 
@@ -117,11 +167,11 @@ public class SchedulePlanner {
         }
 
         double detectorDeficit = conflictDetector.calculateWorkloadDeficit(
-                prioritizedTasks, availability);
+                prioritizedTasks, usableAvailability);
         double allocationDeficit = unscheduledMinutes / 60.0;
         double workloadDeficit = Math.max(detectorDeficit, allocationDeficit);
         if (workloadDeficit > EPSILON) {
-            throw new ScheduleInfeasibleException(schedule, workloadDeficit);
+            throw new ScheduleInfeasibleException(schedule, workloadDeficit, String.join(" ", reasons));
         }
         return schedule;
     }
@@ -129,8 +179,9 @@ public class SchedulePlanner {
     private List<TimeSlot> buildFreeTimeSlots(
             List<AvailabilityBlock> availability,
             LocalDate startDate,
-            LocalDate endDate) {
-        LocalDateTime windowStart = startDate.atStartOfDay();
+            LocalDate endDate,
+            LocalDateTime earliestStart) {
+        LocalDateTime windowStart = laterOf(startDate.atStartOfDay(), earliestStart);
         LocalDateTime windowEnd = endDate.plusDays(1).atStartOfDay();
         List<TimeSlot> slots = availability.stream()
                 .filter(block -> block.getType() == AvailabilityType.AVAILABLE)

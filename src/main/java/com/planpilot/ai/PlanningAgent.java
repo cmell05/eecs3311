@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.planpilot.domain.AcademicTask;
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.ProgressStatus;
+import com.planpilot.domain.ProgressRecord;
 import com.planpilot.domain.Schedule;
 import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.Task;
@@ -75,6 +76,23 @@ public final class PlanningAgent {
             String question,
             Schedule schedule,
             List<AvailabilityBlock> availability) {
+        return explainSchedule(question, schedule, availability, progressContext(null));
+    }
+
+    public String explainSchedule(
+            String question,
+            Schedule schedule,
+            List<AvailabilityBlock> availability,
+            List<ProgressRecord> history) {
+        return explainSchedule(question, schedule, availability, progressContext(
+                        Objects.requireNonNull(history, "Progress history cannot be null.")));
+    }
+
+    private String explainSchedule(
+            String question,
+            Schedule schedule,
+            List<AvailabilityBlock> availability,
+            ProgressContext progress) {
         requireText(question, "Schedule question");
         Objects.requireNonNull(schedule, "Schedule cannot be null.");
         Objects.requireNonNull(availability, "Availability cannot be null.");
@@ -84,7 +102,7 @@ public final class PlanningAgent {
         String response = llmClient.generateText(
                 scheduleExplanationSystemInstruction(),
                 createScheduleExplanationPrompt(
-                        question, schedule, availability));
+                        question, schedule, availability, progress));
         if (response == null || response.isBlank()) {
             throw new LLMClientException(
                     "The LLM returned an empty schedule explanation.");
@@ -97,6 +115,25 @@ public final class PlanningAgent {
             Schedule partialSchedule,
             List<Task> openTasks,
             List<AvailabilityBlock> availability) {
+        return suggestRecovery(workloadDeficitHours, partialSchedule, openTasks, availability, progressContext(null));
+    }
+
+    public RecoveryPlan suggestRecovery(
+            double workloadDeficitHours,
+            Schedule partialSchedule,
+            List<Task> openTasks,
+            List<AvailabilityBlock> availability,
+            List<ProgressRecord> history) {
+        return suggestRecovery(workloadDeficitHours, partialSchedule, openTasks, availability, progressContext(
+                        Objects.requireNonNull(history, "Progress history cannot be null.")));
+    }
+
+    private RecoveryPlan suggestRecovery(
+            double workloadDeficitHours,
+            Schedule partialSchedule,
+            List<Task> openTasks,
+            List<AvailabilityBlock> availability,
+            ProgressContext progress) {
         if (!Double.isFinite(workloadDeficitHours)
                 || workloadDeficitHours <= 0) {
             throw new IllegalArgumentException(
@@ -111,7 +148,7 @@ public final class PlanningAgent {
                 recoverySystemInstruction(),
                 createRecoveryPrompt(
                         workloadDeficitHours, partialSchedule,
-                        openTasks, availability));
+                        openTasks, availability, progress));
         return parseRecoveryPlan(response);
     }
 
@@ -120,6 +157,25 @@ public final class PlanningAgent {
             List<Task> openTasks,
             List<AvailabilityBlock> availability,
             UserPreferences preferences) {
+        return suggestReplanningOption(schedule, openTasks, availability, preferences, progressContext(null));
+    }
+
+    public ReplanRecommendation suggestReplanningOption(
+            Schedule schedule,
+            List<Task> openTasks,
+            List<AvailabilityBlock> availability,
+            UserPreferences preferences,
+            List<ProgressRecord> history) {
+        return suggestReplanningOption(schedule, openTasks, availability, preferences, progressContext(
+                        Objects.requireNonNull(history, "Progress history cannot be null.")));
+    }
+
+    private ReplanRecommendation suggestReplanningOption(
+            Schedule schedule,
+            List<Task> openTasks,
+            List<AvailabilityBlock> availability,
+            UserPreferences preferences,
+            ProgressContext progress) {
         Objects.requireNonNull(schedule, "Schedule cannot be null.");
         requireNonNullElements(openTasks, "Open tasks");
         requireNonNullElements(availability, "Availability");
@@ -129,7 +185,7 @@ public final class PlanningAgent {
         String response = llmClient.generateText(
                 replanningSystemInstruction(),
                 createReplanningPrompt(
-                        schedule, openTasks, availability, preferences));
+                        schedule, openTasks, availability, preferences, progress));
         return parseReplanRecommendation(response);
     }
 
@@ -164,19 +220,19 @@ public final class PlanningAgent {
                 + "availability, or study blocks. If the context cannot answer "
                 + "the question, say that the information is unavailable. "
                 + "The explanation is read-only: do not claim to modify or "
-                + "regenerate the schedule. Keep the answer concise.";
+                + "regenerate the schedule. Keep the answer concise." + progressAccountingInstruction();
     }
 
     private String recoverySystemInstruction() {
         return "Explain an infeasible study workload using only the supplied "
-                + "JSON facts and recommend 1 to 4 distinct recovery actions. "
+                + "JSON facts and recommend 1 to 4 distinct recovery actions. Deferred tasks stay unfinished with unchanged deadlines; explicit user approval is required to defer them. "
                 + "Return exactly one JSON object with a nonblank summary and "
                 + "a suggestions array. Each suggestion must contain action "
                 + "and explanation. Allowed actions are "
                 + "EXTEND_PLANNING_WINDOW, ADD_AVAILABILITY, "
                 + "DEFER_LOWER_PRIORITY_TASK, and KEEP_CURRENT_CONSTRAINTS. "
                 + "Never claim to apply an action, change a deadline, delete "
-                + "work, or regenerate the schedule. The user must choose.";
+                + "work, or regenerate the schedule. The user must choose." + progressAccountingInstruction();
     }
 
     private String replanningSystemInstruction() {
@@ -188,27 +244,26 @@ public final class PlanningAgent {
                 + "EXTEND_PLANNING_WINDOW, or KEEP_CURRENT_SCHEDULE. Use only "
                 + "the supplied facts. Do not claim to apply the option, alter "
                 + "tasks, or regenerate the schedule. The user decides whether "
-                + "to proceed.";
+                + "to proceed." + progressAccountingInstruction();
     }
 
     private String createReplanningPrompt(
             Schedule schedule,
             List<Task> openTasks,
             List<AvailabilityBlock> availability,
-            UserPreferences preferences) {
+            UserPreferences preferences,
+            ProgressContext progress) {
         ObjectNode root = objectMapper.createObjectNode();
-        addScheduleContext(root.putObject("currentSchedule"), schedule);
+        addScheduleContext(root.putObject("currentSchedule"), schedule, progress);
         var taskNodes = root.putArray("openTasks");
         for (Task task : openTasks) {
-            addTaskContext(taskNodes.addObject(), task);
+            addTaskContext(taskNodes.addObject(), task, progress);
         }
         root.put("totalRemainingEffortHours", openTasks.stream()
                 .mapToDouble(Task::getRemainingHours)
                 .sum());
         root.put("currentlyPlannedHours", schedule.getStudyBlocks().stream()
-                .filter(block -> block.getProgressStatus()
-                        != ProgressStatus.COMPLETED)
-                .mapToDouble(StudyBlock::durationHours)
+                .mapToDouble(block -> futurePlannedHours(block, progress.referenceTime()))
                 .sum());
         addAvailabilityContext(root, availability);
         ObjectNode preferencesNode = root.putObject("userPreferences");
@@ -256,14 +311,15 @@ public final class PlanningAgent {
             double workloadDeficitHours,
             Schedule partialSchedule,
             List<Task> openTasks,
-            List<AvailabilityBlock> availability) {
+            List<AvailabilityBlock> availability,
+            ProgressContext progress) {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("workloadDeficitHours", workloadDeficitHours);
         addScheduleContext(
-                root.putObject("partialSchedule"), partialSchedule);
+                root.putObject("partialSchedule"), partialSchedule, progress);
         var taskNodes = root.putArray("openTasks");
         for (Task task : openTasks) {
-            addTaskContext(taskNodes.addObject(), task);
+            addTaskContext(taskNodes.addObject(), task, progress);
         }
         addAvailabilityContext(root, availability);
         return writeJson(root, "recovery suggestion request");
@@ -315,19 +371,25 @@ public final class PlanningAgent {
     private String createScheduleExplanationPrompt(
             String question,
             Schedule schedule,
-            List<AvailabilityBlock> availability) {
+            List<AvailabilityBlock> availability,
+            ProgressContext progress) {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("question", question.trim());
-        addScheduleContext(root.putObject("schedule"), schedule);
+        addScheduleContext(root.putObject("schedule"), schedule, progress);
         addAvailabilityContext(root, availability);
         return writeJson(root, "schedule explanation request");
     }
 
-    private void addScheduleContext(ObjectNode node, Schedule schedule) {
+    private void addScheduleContext(ObjectNode node, Schedule schedule, ProgressContext progress) {
         node.put("id", schedule.getId());
         node.put("startDate", schedule.getStartDate().toString());
         node.put("endDate", schedule.getEndDate().toString());
         node.put("status", schedule.getStatus().name());
+        node.put("referenceDateTime", progress.referenceTime().toString());
+        node.put("progressDetailsAvailable", progress.detailsAvailable());
+        node.put("upcomingPlannedHours", schedule.getStudyBlocks().stream()
+                .mapToDouble(block -> futurePlannedHours(block, progress.referenceTime())).sum());
+        node.put("sessionsAwaitingConfirmation", schedule.getStudyBlocks().stream().filter(StudyBlock::isInferred).count());
         var studyBlocks = node.putArray("studyBlocks");
         for (StudyBlock block : schedule.getStudyBlocks()) {
             ObjectNode blockNode = studyBlocks.addObject();
@@ -337,7 +399,17 @@ public final class PlanningAgent {
             blockNode.put("durationHours", block.durationHours());
             blockNode.put("progressStatus",
                     block.getProgressStatus().name());
-            addTaskContext(blockNode.putObject("task"), block.getTask());
+            blockNode.put("isInferred", block.isInferred());
+            blockNode.put("requiresConfirmation", block.isInferred());
+            blockNode.put("sessionCategory", sessionCategory(block, progress.referenceTime()));
+            blockNode.put("remainingPlannedHours", futurePlannedHours(block, progress.referenceTime()));
+            ProgressRecord latest = progress.latest().get(block.getId());
+            if (latest != null) {
+                blockNode.put("recordedHours", latest.getCompletedHours());
+                blockNode.put("confirmedCompletedHours", latest.isInferred() ? 0 : latest.getCompletedHours());
+                blockNode.put("inferredCompletedHours", latest.isInferred() ? latest.getCompletedHours() : 0);
+            }
+            addTaskContext(blockNode.putObject("task"), block.getTask(), progress);
         }
     }
 
@@ -363,7 +435,7 @@ public final class PlanningAgent {
         }
     }
 
-    private void addTaskContext(ObjectNode node, Task task) {
+    private void addTaskContext(ObjectNode node, Task task, ProgressContext progress) {
         node.put("id", task.getId());
         node.put("title", task.getTitle());
         node.put("kind",
@@ -371,10 +443,20 @@ public final class PlanningAgent {
         node.put("deadline", task.getDeadline().toString());
         node.put("estimatedHours", task.getEstimatedHours());
         node.put("completedHours", task.getCompletedHours());
+        node.put("progressDetailsAvailable", progress.detailsAvailable());
+        if (progress.detailsAvailable()) {
+            double inferred = progress.latest().values().stream()
+                    .filter(record -> record.getTask().getId().equals(task.getId()) && record.isInferred())
+                    .mapToDouble(ProgressRecord::getCompletedHours).sum();
+            // completedHours includes the confirmed baseline plus the latest outcome of each session.
+            node.put("inferredCompletedHours", inferred);
+            node.put("confirmedCompletedHours", Math.max(0, task.getCompletedHours() - inferred));
+        }
         node.put("remainingHours", task.getRemainingHours());
         node.put("difficulty", task.getDifficulty());
         node.put("importance", task.getUserImportance().name());
         node.put("status", task.getStatus().name());
+        if (task.getDeferredUntil() != null) node.put("deferredUntil", task.getDeferredUntil().toString());
         if (task instanceof AcademicTask academicTask) {
             node.put("courseCode", academicTask.getCourse().getCode());
             node.put("courseName", academicTask.getCourse().getName());
@@ -383,6 +465,43 @@ public final class PlanningAgent {
             node.put("academicTaskType",
                     academicTask.getTaskType().name());
         }
+    }
+
+    private record ProgressContext(LocalDateTime referenceTime,
+                                   java.util.Map<String, ProgressRecord> latest,
+                                   boolean detailsAvailable) { }
+
+    private ProgressContext progressContext(List<ProgressRecord> history) {
+        var latest = new java.util.LinkedHashMap<String, ProgressRecord>();
+        if (history != null) {
+            // Ledger order, rather than timestamps, also handles corrections recorded at the same instant.
+            for (ProgressRecord record : history) {
+                Objects.requireNonNull(record, "Progress history cannot contain null records.");
+                latest.put(record.getStudyBlock().getId(), record);
+            }
+        }
+        return new ProgressContext(LocalDateTime.now(clock), latest, history != null);
+    }
+
+    private double futurePlannedHours(StudyBlock block, LocalDateTime now) {
+        if (block.getProgressStatus() != ProgressStatus.PLANNED || !block.getEnd().isAfter(now)) return 0;
+        LocalDateTime remainingStart = block.getStart().isAfter(now) ? block.getStart() : now;
+        return java.time.Duration.between(remainingStart, block.getEnd()).toSeconds() / 3600.0;
+    }
+
+    private String sessionCategory(StudyBlock block, LocalDateTime now) {
+        if (block.getProgressStatus() != ProgressStatus.PLANNED) return "REPORTED_HISTORY";
+        if (!block.getEnd().isAfter(now)) return "AWAITING_INFERENCE";
+        return block.getStart().isAfter(now) ? "UPCOMING" : "IN_PROGRESS";
+    }
+
+    private String progressAccountingInstruction() {
+        return " completedHours and remainingHours include tentative inferred work. "
+                + "Inferred hours are not user-confirmed. Use only the latest recorded outcome per session; "
+                + "recordedHours is actual reported effort, not the session duration. "
+                + "Reported history and elapsed unreported sessions are not upcoming allocations. "
+                + "Upcoming planned hours include only the remaining time of unreported sessions. "
+                + "If progressDetailsAvailable is false, confirmed versus inferred totals are unknown. ";
     }
 
     private String systemInstruction() {

@@ -23,6 +23,7 @@ public final class GeminiLLMClient implements LLMClient {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(45);
 
     private final String apiKey;
+    private final Sleeper sleeper;
     private final Transport transport;
     private final ObjectMapper objectMapper;
 
@@ -32,6 +33,11 @@ public final class GeminiLLMClient implements LLMClient {
 
     GeminiLLMClient(
             String apiKey, Transport transport, ObjectMapper objectMapper) {
+        this(apiKey, transport, objectMapper, Thread::sleep);
+    }
+
+    GeminiLLMClient(String apiKey, Transport transport, ObjectMapper objectMapper, Sleeper sleeper) {
+        this.sleeper = Objects.requireNonNull(sleeper);
         this.apiKey = requireText(apiKey, "Gemini API key");
         this.transport = Objects.requireNonNull(
                 transport, "Transport cannot be null.");
@@ -52,7 +58,15 @@ public final class GeminiLLMClient implements LLMClient {
                 .build();
 
         try {
-            TransportResponse response = transport.send(request);
+            TransportResponse response = null;
+            for (int attempt = 0; attempt < 3; attempt++) {
+                response = transport.send(request);
+                if (!isTransient(response.statusCode())) break;
+                if (attempt == 2) {
+                    throw new LLMClientException("Gemini is temporarily unavailable. Please try again shortly.");
+                }
+                sleeper.sleep(500L * (attempt + 1));
+            }
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw apiFailure(response);
             }
@@ -125,19 +139,8 @@ public final class GeminiLLMClient implements LLMClient {
     }
 
     private LLMClientException apiFailure(TransportResponse response) {
-        String message = "Gemini request failed with HTTP " + response.statusCode() + ".";
-        try {
-            String apiMessage = objectMapper.readTree(response.body())
-                    .path("error")
-                    .path("message")
-                    .asText("");
-            if (!apiMessage.isBlank()) {
-                message += " " + apiMessage;
-            }
-        } catch (JsonProcessingException ignored) {
-            // The status code remains useful even when an error body is malformed.
-        }
-        return new LLMClientException(message);
+        return new LLMClientException("Gemini request failed with HTTP "
+                + response.statusCode() + ". Please check your configuration or try again later.");
     }
 
     private static Transport defaultTransport() {
@@ -157,6 +160,15 @@ public final class GeminiLLMClient implements LLMClient {
             throw new IllegalArgumentException(fieldName + " cannot be blank.");
         }
         return value.trim();
+    }
+
+    private static boolean isTransient(int status) {
+        return status == 429 || status == 500 || status == 502 || status == 503 || status == 504;
+    }
+
+    @FunctionalInterface
+    interface Sleeper {
+        void sleep(long millis) throws InterruptedException;
     }
 
     @FunctionalInterface

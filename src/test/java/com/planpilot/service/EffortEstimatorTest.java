@@ -92,6 +92,18 @@ class EffortEstimatorTest {
         assertFalse(average.isPresent());
     }
 
+    @Test
+    void tentativeCompletionDoesNotBecomeHistoricalTrainingData() {
+        Task target = task("target", 3, 3);
+        Task historical = task("historical", 1, 3);
+        StudyBlock session = new StudyBlock("B", historical, start, start.plusHours(1));
+        ProgressService progress = new ProgressService();
+        progress.inferProgress(session);
+        assertFalse(estimatorReturning(2).calculateHistoricalAverage(target, progress.getHistory()).isPresent());
+        progress.recordProgress(session, ProgressStatus.COMPLETED, 1);
+        assertEquals(1, estimatorReturning(2).calculateHistoricalAverage(target, progress.getHistory()).orElseThrow());
+    }
+
     private EffortEstimator estimatorReturning(double hours) {
         return new EffortEstimator(new PlanningAgent(
                 (systemInstruction, userPrompt) ->

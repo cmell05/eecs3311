@@ -41,7 +41,7 @@ class ScheduleServiceTest {
 
         ConflictDetector conflictDetector = new ConflictDetector();
         SchedulePlanner planner = new SchedulePlanner(
-                task -> 1.0, conflictDetector);
+                task -> 1.0, conflictDetector, java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC));
         scheduleService = new ScheduleService(
                 taskService, availabilityService, planner,
                 new UserPreferences(60, StudyPeriod.ANY, 0));
@@ -97,7 +97,7 @@ class ScheduleServiceTest {
         publisher.subscribe(() -> notifications[0]++);
         ScheduleService infeasibleService = new ScheduleService(
                 taskService, availabilityService,
-                new SchedulePlanner(task -> 1.0, new ConflictDetector()),
+                new SchedulePlanner(task -> 1.0, new ConflictDetector(), java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC)),
                 new UserPreferences(60, StudyPeriod.ANY, 0), publisher);
 
         ScheduleInfeasibleException exception = assertThrows(
@@ -142,7 +142,7 @@ class ScheduleServiceTest {
                 "A2", start, start.plusHours(3), AvailabilityType.AVAILABLE));
         ScheduleService service = new ScheduleService(
                 taskService, availabilityService,
-                new SchedulePlanner(candidate -> 1.0, new ConflictDetector()),
+                new SchedulePlanner(candidate -> 1.0, new ConflictDetector(), java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC)),
                 new UserPreferences(60, StudyPeriod.ANY, 0));
         Schedule original = service.generateSchedule(date, date);
         StudyBlock completed = original.getStudyBlocks().get(0);
@@ -162,8 +162,9 @@ class ScheduleServiceTest {
         assertEquals(start.plusHours(1), replanned.getStudyBlocks().get(1).getStart());
 
         Schedule entireWindow = service.replan(ReplanOption.REPLAN_ENTIRE_WINDOW);
-        assertEquals(1, entireWindow.getStudyBlocks().size());
-        assertEquals(ProgressStatus.PLANNED,
+        assertEquals(2, entireWindow.getStudyBlocks().size());
+        assertSame(completed, entireWindow.getStudyBlocks().get(0));
+        assertEquals(ProgressStatus.COMPLETED,
                 entireWindow.getStudyBlocks().get(0).getProgressStatus());
     }
 

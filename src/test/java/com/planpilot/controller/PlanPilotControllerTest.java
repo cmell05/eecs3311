@@ -55,7 +55,7 @@ class PlanPilotControllerTest {
         AvailabilityService availabilityService = new AvailabilityService();
         ProgressService progressService = new ProgressService();
         SchedulePlanner schedulePlanner = new SchedulePlanner(
-                task -> 1.0, new ConflictDetector());
+                task -> 1.0, new ConflictDetector(), java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC));
         ScheduleService scheduleService = new ScheduleService(
                 taskService, availabilityService, schedulePlanner,
                 new UserPreferences(60, StudyPeriod.ANY, 0));
@@ -232,7 +232,7 @@ class PlanPilotControllerTest {
         AvailabilityService availabilityService = new AvailabilityService();
         ProgressService progressService = new ProgressService();
         SchedulePlanner schedulePlanner = new SchedulePlanner(
-                task -> 1.0, new ConflictDetector());
+                task -> 1.0, new ConflictDetector(), java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC));
         ScheduleService scheduleService = new ScheduleService(
                 taskService, availabilityService, schedulePlanner,
                 new UserPreferences(60, StudyPeriod.ANY, 0));
@@ -257,7 +257,7 @@ class PlanPilotControllerTest {
         AvailabilityService availabilityService = new AvailabilityService();
         ProgressService progressService = new ProgressService();
         SchedulePlanner schedulePlanner = new SchedulePlanner(
-                task -> 1.0, new ConflictDetector());
+                task -> 1.0, new ConflictDetector(), java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC));
         ScheduleService scheduleService = new ScheduleService(
                 taskService, availabilityService, schedulePlanner,
                 new UserPreferences(60, StudyPeriod.ANY, 0));
@@ -286,7 +286,7 @@ class PlanPilotControllerTest {
         AvailabilityService availabilityService = new AvailabilityService();
         ProgressService progressService = new ProgressService();
         SchedulePlanner schedulePlanner = new SchedulePlanner(
-                task -> 1.0, new ConflictDetector());
+                task -> 1.0, new ConflictDetector(), java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC));
         ScheduleService scheduleService = new ScheduleService(
                 taskService, availabilityService, schedulePlanner,
                 new UserPreferences(60, StudyPeriod.ANY, 0));
@@ -322,7 +322,7 @@ class PlanPilotControllerTest {
         ProgressService progressService = new ProgressService();
         ScheduleService scheduleService = new ScheduleService(
                 taskService, availabilityService,
-                new SchedulePlanner(task -> 1.0, new ConflictDetector()),
+                new SchedulePlanner(task -> 1.0, new ConflictDetector(), java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC)),
                 new UserPreferences(60, StudyPeriod.ANY, 0));
         PlanningAgent planningAgent = new PlanningAgent(
                 (systemInstruction, userPrompt) -> """
@@ -362,7 +362,7 @@ class PlanPilotControllerTest {
         ProgressService progressService = new ProgressService();
         ScheduleService scheduleService = new ScheduleService(
                 taskService, availabilityService,
-                new SchedulePlanner(task -> 1.0, new ConflictDetector()),
+                new SchedulePlanner(task -> 1.0, new ConflictDetector(), java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC)),
                 new UserPreferences(60, StudyPeriod.ANY, 0));
         PlanningAgent planningAgent = new PlanningAgent(
                 (systemInstruction, userPrompt) -> """

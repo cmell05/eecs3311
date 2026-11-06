@@ -24,13 +24,22 @@ public final class PlanPilotApplicationFactory {
     }
 
     public static PlanPilotApplicationContext createDefault() {
+        java.time.Clock clock = java.time.Clock.systemDefaultZone();
         PlanningEventPublisher publisher = new PlanningEventPublisher();
         CourseService courseService = new CourseService();
         TaskService taskService = new TaskService(courseService, publisher);
         AvailabilityService availabilityService = new AvailabilityService();
-        ProgressService progressService = new ProgressService(publisher);
+        ProgressService progressService = new ProgressService(publisher, clock,
+                        java.nio.file.Path.of(System.getProperty("planpilot.progress.file", ".planpilot/progress.json")));
+        for (var task : progressService.getRestoredTasks()) {
+            if (task instanceof com.planpilot.domain.AcademicTask academic
+                    && courseService.getCourses().stream().noneMatch(c -> c.getId().equals(academic.getCourse().getId()))) {
+                courseService.addCourse(academic.getCourse());
+            }
+            taskService.createTask(task);
+        }
         SchedulePlanner schedulePlanner = new SchedulePlanner(
-                new BalancedPriorityStrategy(), new ConflictDetector());
+                new BalancedPriorityStrategy(clock), new ConflictDetector(), clock);
         ScheduleService scheduleService = new ScheduleService(
                 taskService, availabilityService, schedulePlanner,
                 new UserPreferences(

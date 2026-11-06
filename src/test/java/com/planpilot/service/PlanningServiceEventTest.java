@@ -63,7 +63,7 @@ class PlanningServiceEventTest {
         availabilityService.addAvailability(new AvailabilityBlock(
                 "A1", start, start.plusHours(2), AvailabilityType.AVAILABLE));
         SchedulePlanner planner = new SchedulePlanner(
-                task -> 1.0, new ConflictDetector());
+                task -> 1.0, new ConflictDetector(), java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC));
         ScheduleService scheduleService = new ScheduleService(
                 taskService, availabilityService, planner,
                 new UserPreferences(60, StudyPeriod.ANY, 0), publisher);

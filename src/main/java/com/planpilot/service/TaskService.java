@@ -41,6 +41,14 @@ public class TaskService {
     public void updateTask(Task task) {
         validateTask(task);
         requireExistingTask(task.getId());
+        Task existing = tasks.get(task.getId());
+        if (task.getEstimatedHours() < existing.getCompletedHours()) {
+            throw new IllegalArgumentException("Estimated effort cannot be less than recorded completed effort. Correct progress first.");
+        }
+        // Editing task details must not erase system-managed progress or deferral.
+        task.setCompletedHours(existing.getCompletedHours());
+        task.setDeferredUntil(existing.getDeferredUntil());
+        if (existing.getStatus() == com.planpilot.domain.TaskStatus.SKIPPED) task.markSkipped();
         tasks.put(task.getId(), task);
         eventPublisher.notifyObservers();
     }

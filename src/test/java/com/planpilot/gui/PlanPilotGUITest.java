@@ -48,4 +48,23 @@ class PlanPilotGUITest {
         assertTrue(text.contains("Review before applying."));
         assertEquals(4, text.lines().count());
     }
+    @Test
+    void upcomingPlanIsSeparatedFromRetainedHistoryAndTaskColoursAreStable() {
+        var day = java.time.LocalDate.of(2026, 11, 5);
+        var task = new com.planpilot.domain.GeneralTask("task", "Design", day.plusDays(1).atStartOfDay(),
+                4, 3, com.planpilot.domain.PriorityLevel.MEDIUM);
+        var schedule = new com.planpilot.domain.Schedule("S", day, day);
+        var completed = new com.planpilot.domain.StudyBlock("old", task, day.atTime(9, 0), day.atTime(10, 0));
+        completed.markCompleted();
+        var upcoming = new com.planpilot.domain.StudyBlock("new", task, day.atTime(10, 0), day.atTime(11, 0));
+        schedule.addStudyBlock(completed); schedule.addStudyBlock(upcoming);
+        assertEquals(List.of(upcoming), PlanPilotGUI.upcomingSessions(schedule));
+        assertEquals(List.of(completed), PlanPilotGUI.historicalSessions(schedule));
+        assertEquals(2, schedule.getStudyBlocks().size());
+        var edited = new com.planpilot.domain.GeneralTask("task", "Renamed design", task.getDeadline(),
+                4, 3, com.planpilot.domain.PriorityLevel.MEDIUM);
+        assertEquals(PlanPilotGUI.taskColour(task), PlanPilotGUI.taskColour(edited));
+        assertTrue(PlanPilotGUI.upcomingSessions(null).isEmpty());
+    }
+
 }

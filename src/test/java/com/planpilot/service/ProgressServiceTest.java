@@ -99,9 +99,9 @@ class ProgressServiceTest {
         StudyBlock block = block("B1", task, 1);
 
         assertThrows(IllegalArgumentException.class,
-                () -> service.recordProgress(block, ProgressStatus.PARTIAL, 0));
+                () -> service.recordProgress(block, ProgressStatus.PARTIAL, -0.1));
         assertThrows(IllegalArgumentException.class,
-                () -> service.recordProgress(block, ProgressStatus.PARTIAL, 1));
+                () -> service.recordProgress(block, ProgressStatus.PARTIAL, 1.1));
         assertThrows(IllegalArgumentException.class,
                 () -> service.recordProgress(block, ProgressStatus.COMPLETED, 0.5));
         assertThrows(IllegalArgumentException.class,

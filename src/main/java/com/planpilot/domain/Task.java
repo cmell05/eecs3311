@@ -12,6 +12,7 @@ public abstract class Task {
     private int difficulty;
     private PriorityLevel userImportance;
     private TaskStatus status;
+    private LocalDateTime deferredUntil;
 
     protected Task(String id, String title, LocalDateTime deadline,
                    double estimatedHours, int difficulty,
@@ -32,6 +33,9 @@ public abstract class Task {
     public double getCompletedHours() { return completedHours; }
     public int getDifficulty() { return difficulty; }
     public PriorityLevel getUserImportance() { return userImportance; }
+    public LocalDateTime getDeferredUntil() { return deferredUntil; }
+    public void setDeferredUntil(LocalDateTime deferredUntil) { this.deferredUntil = deferredUntil; }
+
     public TaskStatus getStatus() { return status; }
 
     public double getRemainingHours() {

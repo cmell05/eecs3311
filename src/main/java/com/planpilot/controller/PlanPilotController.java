@@ -17,6 +17,7 @@ import com.planpilot.service.CourseService;
 import com.planpilot.service.EffortEstimator;
 import com.planpilot.service.ProgressService;
 import com.planpilot.service.ReplanOption;
+import com.planpilot.service.RecoveryRequest;
 import com.planpilot.service.ScheduleService;
 import com.planpilot.service.ScheduleInfeasibleException;
 import com.planpilot.service.TaskService;
@@ -85,6 +86,8 @@ public class PlanPilotController {
     public void updateCourse(Course course) {
         courseService.updateCourse(course);
         taskService.updateCourseReferences(course);
+        progressService.registerTasks(taskService.getTasks());
+        progressService.checkpoint();
     }
 
     public void deleteCourse(String courseId) {
@@ -101,17 +104,21 @@ public class PlanPilotController {
 
     public Task addTask(Task taskData) {
         Task created = taskService.createTask(taskData);
+        progressService.registerTasks(java.util.List.of(created));
         scheduleService.markScheduleOutdatedIfPresent();
         return created;
     }
 
     public void updateTask(Task task) {
         taskService.updateTask(task);
+        progressService.registerTasks(taskService.getTasks());
+        progressService.checkpoint();
         scheduleService.markScheduleOutdatedIfPresent();
     }
 
     public void deleteTask(String taskId) {
         taskService.deleteTask(taskId);
+        progressService.archiveTask(taskId);
         scheduleService.markScheduleOutdatedIfPresent();
     }
 
@@ -144,26 +151,105 @@ public class PlanPilotController {
     }
 
     public Schedule generateSchedule(LocalDate start, LocalDate end) {
-        return scheduleService.generateSchedule(start, end);
+        refreshProgress();
+        scheduleService.retainSessions(progressService.getSessions());
+        try {
+            Schedule schedule = scheduleService.generateSchedule(start, end);
+            progressService.trackSessions(schedule.getStudyBlocks());
+            return schedule;
+        } catch (ScheduleInfeasibleException failure) {
+            progressService.trackSessions(failure.getPartialSchedule().getStudyBlocks());
+            throw failure;
+        }
     }
 
     public void updateProgress(
             StudyBlock block, ProgressStatus status, double hours) {
+        progressService.registerTasks(taskService.getTasks());
+        double before = block.getTask().getCompletedHours();
         progressService.recordProgress(block, status, hours);
-        scheduleService.markScheduleOutdatedIfPresent();
+        if (before != block.getTask().getCompletedHours()) scheduleService.markScheduleOutdatedIfPresent();
     }
 
     public void inferProgress(StudyBlock block) {
+        double before = block.getTask().getCompletedHours();
         progressService.inferProgress(block);
-        scheduleService.markScheduleOutdatedIfPresent();
+        if (before != block.getTask().getCompletedHours()) scheduleService.markScheduleOutdatedIfPresent();
     }
+
+    public void refreshProgress() {
+        progressService.registerTasks(taskService.getTasks());
+        if (progressService.inferPastSessions()) scheduleService.markScheduleOutdatedIfPresent();
+    }
+
+    public List<StudyBlock> getProgressSessions() {
+        progressService.registerTasks(taskService.getTasks());
+        return progressService.getSessions();
+    }
+
+    public double getConfirmedHours(Task task) { return progressService.getConfirmedHours(task); }
+    public double getInferredHours(Task task) { return progressService.getInferredHours(task); }
+    public double getOriginalEstimate(Task task) { return progressService.getOriginalEstimate(task); }
 
     public List<ProgressRecord> getProgressHistory(Task task) {
         return progressService.getHistoryForTask(task);
     }
 
+    public java.util.Optional<Schedule> getCurrentSchedule() {
+        return scheduleService.findCurrentSchedule();
+    }
+
     public Schedule requestReplan(ReplanOption option) {
-        return scheduleService.replan(option);
+        if (option == ReplanOption.KEEP_CURRENT_SCHEDULE) return scheduleService.replan(option);
+        refreshProgress();
+        scheduleService.retainSessions(progressService.getSessions());
+        try {
+            Schedule schedule = scheduleService.replan(option);
+            progressService.trackSessions(schedule.getStudyBlocks());
+            return schedule;
+        } catch (ScheduleInfeasibleException failure) {
+            progressService.trackSessions(failure.getPartialSchedule().getStudyBlocks());
+            throw failure;
+        }
+    }
+
+    public void resumeTask(String taskId) {
+        Task task = taskService.getTasks().stream().filter(t -> t.getId().equals(taskId))
+                .findFirst().orElseThrow(() -> new IllegalArgumentException("Select an existing task."));
+        task.setDeferredUntil(null);
+        updateTask(task);
+    }
+
+    /** Apply only an explicit, validated choice; AI suggestions alone never call this. */
+    public Schedule applyRecovery(RecoveryRequest request) {
+        Objects.requireNonNull(request, "Review a recovery action first.");
+        Schedule partial = scheduleService.requireRecoverySchedule(request.scheduleId());
+        LocalDate start = partial.getStartDate();
+        LocalDate end = partial.getEndDate();
+        switch (request.action()) {
+            case KEEP_CURRENT_CONSTRAINTS -> { return partial; }
+            case EXTEND_PLANNING_WINDOW -> {
+                if (!request.newEndDate().isAfter(end))
+                    throw new IllegalArgumentException("The new end date must be later than the current planning end date.");
+                end = request.newEndDate();
+            }
+            case ADD_AVAILABILITY -> {
+                AvailabilityBlock block = request.availability();
+                if (!block.getStart().isBefore(end.plusDays(1).atStartOfDay())
+                        || !block.getEnd().isAfter(start.atStartOfDay()))
+                    throw new IllegalArgumentException("Add Available time inside the current planning window.");
+                addAvailability(block);
+            }
+            case DEFER_LOWER_PRIORITY_TASK -> {
+                Task task = taskService.getOpenTasks().stream().filter(t -> t.getId().equals(request.taskId()))
+                        .findFirst().orElseThrow(() -> new IllegalArgumentException("Select an unfinished task."));
+                if (task.getDeferredUntil() != null && !task.getDeferredUntil().isBefore(end.plusDays(1).atStartOfDay()))
+                    throw new IllegalArgumentException("This task is already deferred from this window.");
+                task.setDeferredUntil(end.plusDays(1).atStartOfDay());
+                updateTask(task);
+            }
+        }
+        return generateSchedule(start, end);
     }
 
     public UserPreferences getUserPreferences() {
@@ -214,7 +300,7 @@ public class PlanPilotController {
         return planningAgent.explainSchedule(
                 question,
                 schedule,
-                availabilityService.getAvailability(windowStart, windowEnd));
+                availabilityService.getAvailability(windowStart, windowEnd), progressService.getHistory());
     }
 
     public RecoveryPlan requestRecoverySuggestions(
@@ -234,7 +320,7 @@ public class PlanPilotController {
                 infeasibility.getWorkloadDeficitHours(),
                 partialSchedule,
                 taskService.getOpenTasks(),
-                availabilityService.getAvailability(windowStart, windowEnd));
+                availabilityService.getAvailability(windowStart, windowEnd), progressService.getHistory());
     }
 
     public ReplanRecommendation requestReplanRecommendation() {
@@ -250,7 +336,7 @@ public class PlanPilotController {
                 schedule,
                 taskService.getOpenTasks(),
                 availabilityService.getAvailability(windowStart, windowEnd),
-                scheduleService.getPreferences());
+                scheduleService.getPreferences(), progressService.getHistory());
     }
 
     private static void requireText(String value, String fieldName) {

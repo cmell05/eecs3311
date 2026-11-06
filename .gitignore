@@ -7,3 +7,6 @@ target/
 !.env.example
 application-secrets.properties
 .DS_Store
+
+# Local progress history
+.planpilot/

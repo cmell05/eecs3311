@@ -240,7 +240,8 @@ class PlanningAgentTest {
                 "recommendedOption":"REPLAN_ENTIRE_WINDOW",
                 "rationale":"Rebuild the window to include all open work."}
                 """);
-        PlanningAgent agent = new PlanningAgent(fakeClient);
+        PlanningAgent agent = new PlanningAgent(fakeClient, new ObjectMapper(),
+                Clock.fixed(Instant.parse("2026-11-03T08:00:00Z"), ZoneOffset.UTC));
         Task task = academicTask();
         Schedule schedule = new Schedule(
                 "S1", LocalDate.of(2026, 11, 3),

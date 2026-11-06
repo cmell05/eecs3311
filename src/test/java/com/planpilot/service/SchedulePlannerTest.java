@@ -28,7 +28,7 @@ class SchedulePlannerTest {
     private final PriorityStrategy priorityStrategy = task ->
             task.getUserImportance() == PriorityLevel.HIGH ? 100 : 10;
     private final SchedulePlanner planner = new SchedulePlanner(
-            priorityStrategy, conflictDetector);
+            priorityStrategy, conflictDetector, java.time.Clock.fixed(java.time.Instant.parse("2026-10-01T00:00:00Z"), java.time.ZoneOffset.UTC));
 
     @Test
     void schedulesSimpleTaskInAvailableTime() {

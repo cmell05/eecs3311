@@ -40,29 +40,29 @@ public final class EffortEstimator {
 
     private HistoricalEffort calculateHistoricalEffort(
             Task target, List<ProgressRecord> history) {
-        Map<Task, Map<StudyBlock, ProgressRecord>> latestByTask =
-                new IdentityHashMap<>();
+        Map<String, Map<String, ProgressRecord>> latestByTask =
+                new java.util.LinkedHashMap<>();
         for (ProgressRecord record : history) {
             Objects.requireNonNull(record,
                     "Progress history cannot contain null records.");
             Task historicalTask = record.getTask();
-            if (historicalTask != target
+            if (!historicalTask.getId().equals(target.getId())
                     && historicalTask.getStatus() == TaskStatus.COMPLETED
                     && isSimilar(target, historicalTask)) {
                 latestByTask.computeIfAbsent(
-                                historicalTask, ignored -> new IdentityHashMap<>())
-                        .put(record.getStudyBlock(), record);
+                                historicalTask.getId(), ignored -> new java.util.LinkedHashMap<>())
+                        .put(record.getStudyBlock().getId(), record);
             }
         }
 
         double totalHours = 0;
         int sampleCount = 0;
-        for (Map<StudyBlock, ProgressRecord> taskRecords
+        for (Map<String, ProgressRecord> taskRecords
                 : latestByTask.values()) {
             double actualHours = taskRecords.values().stream()
                     .mapToDouble(ProgressRecord::getCompletedHours)
                     .sum();
-            if (actualHours > 0) {
+            if (actualHours > 0 && taskRecords.values().stream().noneMatch(ProgressRecord::isInferred)) {
                 totalHours += actualHours;
                 sampleCount++;
             }

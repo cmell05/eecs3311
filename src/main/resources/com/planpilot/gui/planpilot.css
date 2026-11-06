@@ -240,3 +240,19 @@
     -fx-border-color: #e2e8f0 transparent transparent transparent;
     -fx-text-fill: #617187;
 }
+
+.session-card {
+    -fx-background-color: white;
+    -fx-border-width: 0 0 0 5px;
+    -fx-padding: 10px 14px;
+}
+.session-number {
+    -fx-font-size: 12px;
+    -fx-font-weight: 700;
+    -fx-text-fill: #65758a;
+}
+.session-title {
+    -fx-font-size: 15px;
+    -fx-font-weight: 700;
+    -fx-text-fill: #20344d;
+}
