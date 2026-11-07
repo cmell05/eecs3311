@@ -43,8 +43,8 @@ public abstract class Task {
     }
 
     public void recordProgress(double hours) {
-        if (hours < 0) {
-            throw new IllegalArgumentException("Progress hours cannot be negative.");
+        if (!Double.isFinite(hours) || hours < 0) {
+            throw new IllegalArgumentException("Progress hours must be a nonnegative finite value.");
         }
         if (hours == 0 || status == TaskStatus.COMPLETED) {
             return;
@@ -92,8 +92,8 @@ public abstract class Task {
     }
 
     public void setEstimatedHours(double estimatedHours) {
-        if (estimatedHours <= 0) {
-            throw new IllegalArgumentException("Estimated hours must be positive.");
+        if (!Double.isFinite(estimatedHours) || estimatedHours <= 0) {
+            throw new IllegalArgumentException("Estimated hours must be a positive finite value.");
         }
         if (estimatedHours < completedHours) {
             throw new IllegalArgumentException("Estimated hours cannot be less than completed hours.");

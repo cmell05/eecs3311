@@ -36,8 +36,8 @@ public class AcademicTask extends Task {
     }
 
     public void setAssessmentWeight(double assessmentWeight) {
-        if (assessmentWeight < 0 || assessmentWeight > 100) {
-            throw new IllegalArgumentException("Assessment weight must be between 0 and 100.");
+        if (!Double.isFinite(assessmentWeight) || assessmentWeight < 0 || assessmentWeight > 100) {
+            throw new IllegalArgumentException("Assessment weight must be a finite value between 0 and 100.");
         }
         this.assessmentWeight = assessmentWeight;
     }

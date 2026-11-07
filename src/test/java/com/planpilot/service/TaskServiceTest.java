@@ -72,13 +72,12 @@ class TaskServiceTest {
 
     @Test
     void rejectsInvalidEffortAndInvalidOperations() {
-        Task invalidEffort = new GeneralTask(
-                "T1", "Invalid", deadline, Double.NaN, 2, PriorityLevel.LOW);
         Task validTask = generalTask("T2", "Valid");
         taskService.createTask(validTask);
 
         assertThrows(IllegalArgumentException.class,
-                () -> taskService.createTask(invalidEffort));
+                () -> taskService.createTask(new GeneralTask(
+                        "T1", "Invalid", deadline, Double.NaN, 2, PriorityLevel.LOW)));
         assertThrows(IllegalArgumentException.class,
                 () -> new GeneralTask("T3", "Negative", deadline, -1, 2, PriorityLevel.LOW));
         assertThrows(IllegalArgumentException.class,
