@@ -12,10 +12,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 
 class PlanPilotApplicationFactoryTest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory;
+    private PlanPilotApplicationContext freshContext() {
+        return PlanPilotApplicationFactory.create(directory.resolve(java.util.UUID.randomUUID() + ".json"), java.time.Clock.systemDefaultZone());
+    }
     @Test
     void createsSharedObserverWiringAndDefaultPreferences() {
         PlanPilotApplicationContext context =
-                PlanPilotApplicationFactory.createDefault();
+                freshContext();
         int[] notifications = {0};
         context.eventPublisher().subscribe(() -> notifications[0]++);
 
@@ -33,9 +37,9 @@ class PlanPilotApplicationFactoryTest {
     @Test
     void createsIndependentApplicationContexts() {
         PlanPilotApplicationContext first =
-                PlanPilotApplicationFactory.createDefault();
+                freshContext();
         PlanPilotApplicationContext second =
-                PlanPilotApplicationFactory.createDefault();
+                freshContext();
 
         assertNotSame(first.controller(), second.controller());
         assertNotSame(first.eventPublisher(), second.eventPublisher());

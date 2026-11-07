@@ -246,6 +246,24 @@
     -fx-border-width: 0 0 0 5px;
     -fx-padding: 10px 14px;
 }
+
+/* Keep card text readable when JavaFX changes selected-cell text colours. */
+.session-card .label {
+    -fx-text-fill: #314257;
+}
+
+.list-cell:filled:selected .session-card {
+    -fx-background-color: #e8efff;
+}
+
+.session-card .label.session-number {
+    -fx-text-fill: #65758a;
+}
+
+.session-card .label.session-title {
+    -fx-text-fill: #20344d;
+}
+
 .session-number {
     -fx-font-size: 12px;
     -fx-font-weight: 700;

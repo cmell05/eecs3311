@@ -24,16 +24,28 @@ public final class PlanPilotApplicationFactory {
     }
 
     public static PlanPilotApplicationContext createDefault() {
-        java.time.Clock clock = java.time.Clock.systemDefaultZone();
+        return create(java.nio.file.Path.of(System.getProperty("planpilot.progress.file", ".planpilot/progress.json")),
+                java.time.Clock.systemDefaultZone());
+    }
+
+    public static PlanPilotApplicationContext create(java.nio.file.Path journal, java.time.Clock clock) {
+        java.util.Objects.requireNonNull(journal, "Workspace file cannot be null.");
+        java.util.Objects.requireNonNull(clock, "Clock cannot be null.");
         PlanningEventPublisher publisher = new PlanningEventPublisher();
         CourseService courseService = new CourseService();
         TaskService taskService = new TaskService(courseService, publisher);
         AvailabilityService availabilityService = new AvailabilityService();
-        ProgressService progressService = new ProgressService(publisher, clock,
-                        java.nio.file.Path.of(System.getProperty("planpilot.progress.file", ".planpilot/progress.json")));
+        ProgressService progressService = new ProgressService(publisher, clock, journal);
+        var workspace = progressService.getRestoredWorkspace();
+        workspace.ifPresent(saved -> {
+            saved.courses().forEach(courseService::addCourse);
+            saved.availability().forEach(availabilityService::addAvailability);
+        });
         for (var task : progressService.getRestoredTasks()) {
             if (task instanceof com.planpilot.domain.AcademicTask academic
                     && courseService.getCourses().stream().noneMatch(c -> c.getId().equals(academic.getCourse().getId()))) {
+                if (workspace.isPresent())
+                    throw new IllegalStateException("Saved academic task references a missing course; the workspace has been kept unchanged.");
                 courseService.addCourse(academic.getCourse());
             }
             taskService.createTask(task);
@@ -42,11 +54,13 @@ public final class PlanPilotApplicationFactory {
                 new BalancedPriorityStrategy(clock), new ConflictDetector(), clock);
         ScheduleService scheduleService = new ScheduleService(
                 taskService, availabilityService, schedulePlanner,
-                new UserPreferences(
+                workspace.map(com.planpilot.service.WorkspaceSnapshot::preferences).orElseGet(() -> new UserPreferences(
                         DEFAULT_MAX_SESSION_MINUTES,
                         StudyPeriod.ANY,
-                        DEFAULT_BREAK_MINUTES),
+                        DEFAULT_BREAK_MINUTES)),
                 publisher);
+        workspace.ifPresent(scheduleService::restoreWorkspace);
+        progressService.setWorkspaceSnapshotSupplier(() -> scheduleService.snapshot(courseService.getCourses()));
         AiComponents aiComponents = createAiComponents();
         PlanPilotController controller = new PlanPilotController(
                 courseService, taskService, availabilityService,

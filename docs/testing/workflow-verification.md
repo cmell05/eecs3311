@@ -42,4 +42,14 @@ JAVA_TOOL_OPTIONS='-Dplanpilot.progress.file=.planpilot/gui-acceptance.json' mvn
 9. Attempt to delete a linked course; it must be blocked. Delete/reassign its tasks before retrying.
 10. For inference, schedule a short session near the current time, wait until its end plus 30 seconds, and check that it is labelled tentative. Correct it to SKIPPED; its inferred contribution must disappear.
 
-Availability, preferences, and the active planning window are still not persisted across restarts. Persistence expansion is outside this verification change.
+## Restart acceptance check (added November 7)
+
+Add a course with no tasks, an academic/general task, available time and a fixed
+commitment. Change preferences, generate a schedule, and mark an unreported
+session Skipped or Partial with zero hours. Confirm OUTDATED appears without
+regeneration. Close and relaunch using the same workspace path. Courses, task
+relationships, availability, preferences, planning dates, session identities,
+progress/history, and the outdated warning must return. Replan explicitly;
+reported history must remain correctable. Infeasible plans must retain their
+warnings and recovery options across restart. Existing version 1 progress files
+are upgraded on the next successful change without discarding history.

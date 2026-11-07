@@ -80,14 +80,16 @@ public class PlanPilotController {
     }
 
     public Course addCourse(Course courseData) {
-        return courseService.addCourse(courseData);
+        Course course = courseService.addCourse(courseData);
+        checkpointWorkspace();
+        return course;
     }
 
     public void updateCourse(Course course) {
         courseService.updateCourse(course);
         taskService.updateCourseReferences(course);
         progressService.registerTasks(taskService.getTasks());
-        progressService.checkpoint();
+        checkpointWorkspace();
     }
 
     public void deleteCourse(String courseId) {
@@ -96,6 +98,7 @@ public class PlanPilotController {
                     "Cannot delete a course while academic tasks reference it.");
         }
         courseService.deleteCourse(courseId);
+        checkpointWorkspace();
     }
 
     public List<Course> getCourses() {
@@ -106,20 +109,22 @@ public class PlanPilotController {
         Task created = taskService.createTask(taskData);
         progressService.registerTasks(java.util.List.of(created));
         scheduleService.markScheduleOutdatedIfPresent();
+        checkpointWorkspace();
         return created;
     }
 
     public void updateTask(Task task) {
         taskService.updateTask(task);
         progressService.registerTasks(taskService.getTasks());
-        progressService.checkpoint();
         scheduleService.markScheduleOutdatedIfPresent();
+        checkpointWorkspace();
     }
 
     public void deleteTask(String taskId) {
         taskService.deleteTask(taskId);
         progressService.archiveTask(taskId);
         scheduleService.markScheduleOutdatedIfPresent();
+        checkpointWorkspace();
     }
 
     public List<Task> getOpenTasks() {
@@ -133,16 +138,19 @@ public class PlanPilotController {
     public void addAvailability(AvailabilityBlock block) {
         availabilityService.addAvailability(block);
         scheduleService.markScheduleOutdatedIfPresent();
+        checkpointWorkspace();
     }
 
     public void updateAvailability(AvailabilityBlock block) {
         availabilityService.updateAvailability(block);
         scheduleService.markScheduleOutdatedIfPresent();
+        checkpointWorkspace();
     }
 
     public void deleteAvailability(String blockId) {
         availabilityService.deleteAvailability(blockId);
         scheduleService.markScheduleOutdatedIfPresent();
+        checkpointWorkspace();
     }
 
     public List<AvailabilityBlock> getAvailability(
@@ -156,9 +164,11 @@ public class PlanPilotController {
         try {
             Schedule schedule = scheduleService.generateSchedule(start, end);
             progressService.trackSessions(schedule.getStudyBlocks());
+            checkpointWorkspace();
             return schedule;
         } catch (ScheduleInfeasibleException failure) {
             progressService.trackSessions(failure.getPartialSchedule().getStudyBlocks());
+            checkpointWorkspace();
             throw failure;
         }
     }
@@ -166,20 +176,32 @@ public class PlanPilotController {
     public void updateProgress(
             StudyBlock block, ProgressStatus status, double hours) {
         progressService.registerTasks(taskService.getTasks());
-        double before = block.getTask().getCompletedHours();
+        StudyBlock previous = progressService.getSessions().stream()
+                .filter(saved -> saved.getId().equals(block.getId())).findFirst().orElse(block);
+        double before = previous.getTask().getCompletedHours();
+        ProgressStatus previousStatus = previous.getProgressStatus();
+        boolean wasInferred = previous.isInferred();
         progressService.recordProgress(block, status, hours);
-        if (before != block.getTask().getCompletedHours()) scheduleService.markScheduleOutdatedIfPresent();
+        if (before != block.getTask().getCompletedHours() || previousStatus != block.getProgressStatus()
+                || wasInferred != block.isInferred()) scheduleService.markScheduleOutdatedIfPresent();
+        checkpointWorkspace();
     }
 
     public void inferProgress(StudyBlock block) {
         double before = block.getTask().getCompletedHours();
+        ProgressStatus previousStatus = block.getProgressStatus();
         progressService.inferProgress(block);
-        if (before != block.getTask().getCompletedHours()) scheduleService.markScheduleOutdatedIfPresent();
+        if (before != block.getTask().getCompletedHours() || previousStatus != block.getProgressStatus())
+            scheduleService.markScheduleOutdatedIfPresent();
+        checkpointWorkspace();
     }
 
     public void refreshProgress() {
         progressService.registerTasks(taskService.getTasks());
-        if (progressService.inferPastSessions()) scheduleService.markScheduleOutdatedIfPresent();
+        if (progressService.inferPastSessions()) {
+            scheduleService.markScheduleOutdatedIfPresent();
+            checkpointWorkspace();
+        }
     }
 
     public List<StudyBlock> getProgressSessions() {
@@ -195,6 +217,15 @@ public class PlanPilotController {
         return progressService.getHistoryForTask(task);
     }
 
+    private void checkpointWorkspace() {
+        progressService.registerTasks(taskService.getTasks());
+        progressService.checkpoint();
+    }
+
+    public java.util.Optional<ScheduleInfeasibleException> getCurrentInfeasibility() {
+        return scheduleService.getCurrentInfeasibility();
+    }
+
     public java.util.Optional<Schedule> getCurrentSchedule() {
         return scheduleService.findCurrentSchedule();
     }
@@ -206,9 +237,11 @@ public class PlanPilotController {
         try {
             Schedule schedule = scheduleService.replan(option);
             progressService.trackSessions(schedule.getStudyBlocks());
+            checkpointWorkspace();
             return schedule;
         } catch (ScheduleInfeasibleException failure) {
             progressService.trackSessions(failure.getPartialSchedule().getStudyBlocks());
+            checkpointWorkspace();
             throw failure;
         }
     }
@@ -258,6 +291,7 @@ public class PlanPilotController {
 
     public void updateUserPreferences(UserPreferences preferences) {
         scheduleService.updatePreferences(preferences);
+        checkpointWorkspace();
     }
 
     public boolean isAiAvailable() {
@@ -266,6 +300,7 @@ public class PlanPilotController {
 
     public void markScheduleOutdated() {
         scheduleService.markScheduleOutdated();
+        checkpointWorkspace();
     }
 
     public double requestEffortSuggestion(Task task) {

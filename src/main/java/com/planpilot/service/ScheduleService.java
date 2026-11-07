@@ -26,6 +26,28 @@ public class ScheduleService {
     private final PlanningEventPublisher eventPublisher;
     private Schedule currentSchedule;
     private boolean recoveryNeeded;
+    private double workloadDeficitHours;
+    private String infeasibilityReason = "";
+
+    public java.util.Optional<ScheduleInfeasibleException> getCurrentInfeasibility() {
+        return recoveryNeeded && currentSchedule != null && currentSchedule.getStatus() != ScheduleStatus.OUTDATED
+                ? java.util.Optional.of(new ScheduleInfeasibleException(currentSchedule, workloadDeficitHours, infeasibilityReason))
+                : java.util.Optional.empty();
+    }
+
+    public WorkspaceSnapshot snapshot(List<com.planpilot.domain.Course> courses) {
+        return new WorkspaceSnapshot(courses,
+                availabilityService.getAvailability(LocalDateTime.MIN, LocalDateTime.MAX),
+                getPreferences(), currentSchedule, workloadDeficitHours, infeasibilityReason);
+    }
+
+    public void restoreWorkspace(WorkspaceSnapshot snapshot) {
+        currentSchedule = snapshot.schedule();
+        workloadDeficitHours = snapshot.workloadDeficitHours();
+        infeasibilityReason = snapshot.infeasibilityReason();
+        recoveryNeeded = workloadDeficitHours > 0;
+        if (currentSchedule != null) retainSessions(currentSchedule.getStudyBlocks());
+    }
     private final java.util.Map<String, StudyBlock> retainedSessions = new java.util.LinkedHashMap<>();
 
     public void retainSessions(List<StudyBlock> sessions) {
@@ -80,8 +102,12 @@ public class ScheduleService {
             currentSchedule = mergeCompletedBlocks(schedulePlanner.createSchedule(
                     taskService.getOpenTasks(), availability, preferences, start, end), preserved);
             recoveryNeeded = false;
+            workloadDeficitHours = 0;
+            infeasibilityReason = "";
         } catch (ScheduleInfeasibleException exception) {
             recoveryNeeded = true;
+            workloadDeficitHours = exception.getWorkloadDeficitHours();
+            infeasibilityReason = exception.getMessage();
             currentSchedule = mergeCompletedBlocks(exception.getPartialSchedule(), preserved);
             eventPublisher.notifyObservers();
             throw new ScheduleInfeasibleException(currentSchedule, exception.getWorkloadDeficitHours(), exception.getMessage());

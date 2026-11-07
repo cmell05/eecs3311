@@ -77,11 +77,7 @@ public class PlanPilotCLI {
 
     private void syncSchedule() {
         currentSchedule = controller.getCurrentSchedule().orElse(null);
-        if (lastInfeasibility != null && (currentSchedule == null
-                || !currentSchedule.getId().equals(lastInfeasibility.getPartialSchedule().getId())
-                || currentSchedule.getStatus() == com.planpilot.domain.ScheduleStatus.OUTDATED)) {
-            lastInfeasibility = null;
-        }
+        lastInfeasibility = controller.getCurrentInfeasibility().orElse(null);
     }
 
     static PlanPilotController createDefaultController() {

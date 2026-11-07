@@ -91,8 +91,8 @@ without a user action. **14** manages existing entries and lists availability.
 After an infeasible plan, choose a recovery action or keep the partial plan;
 AI recovery advice is optional (recovery choice **4**) and is never requested
 automatically. AI menu items **10–13** need local Gemini configuration; normal
-planning and progress work without it. Availability, preferences, and the active
-planning window are currently held in memory and must be entered again after restart.
+planning and progress work without it. Courses, tasks, availability, preferences, the active plan, and progress history
+are saved locally and restored after restart.
 
 ## Run the GUI
 
@@ -120,6 +120,18 @@ mvn test
 
 ## Progress tracking and local history
 
+Tasks are grouped into **In progress**, **Not started**, **Completed**, and
+**Skipped** sections with counts. Expand a section and select a task to edit it.
+
+Progress opens on **To confirm**, with sessions grouped by task. Confirmed
+Completed, Partially Completed, and Skipped sessions move to **History**;
+remaining task effort is preserved. Tentative inferred outcomes stay in
+**To confirm** until confirmed or corrected. Open **History**, expand a task,
+and select a session to correct its result. The correction ledger shown in the
+editor belongs to that selected session. Task bars and estimates are available
+under the expandable **Task progress** summary.
+
+
 The Progress page shows planned hours, confirmed completion, remaining effort,
 completed/incomplete tasks, and elapsed sessions awaiting confirmation. Task bars
 show confirmed hours. Remaining effort also includes tentative inferred hours,
@@ -136,8 +148,22 @@ Local progress is saved atomically to `.planpilot/progress.json`, which is ignor
 by Git. It includes task/course snapshots, original estimates, tracked sessions,
 and the inferred/confirmed correction ledger, and is restored on the next launch.
 Deleted tasks remain archived rather than reappearing in the active task list.
-Availability, scheduling preferences, and the active schedule window are not saved;
-enter availability again before generating a new plan after restarting.
+The same file also saves standalone courses, all availability/commitment entries,
+scheduling preferences, and the active schedule with its planning window, session
+IDs, CURRENT/OUTDATED state, and any infeasibility warning. Both GUI and CLI
+restore that workspace without generating a new plan. Each successful application
+change is saved automatically; no separate Save command is needed.
+
+Existing version 1 progress files load without being rewritten. Their task,
+course, session, and correction history is retained when the next change upgrades
+the file to version 2. Missing or malformed data produces an error instead of
+silently clearing the file. `-Dplanpilot.progress.file=/path/to/workspace.json`
+selects a different local workspace.
+
+Skipping an unreported session or recording zero actual hours also marks the
+active schedule outdated because the session outcome changed, even when total
+completed effort stays zero. Repeating an identical result does not add effort
+or invalidate a freshly replanned schedule again.
 
 Schedule and Progress show numbered session cards with task names, dates, times,
 durations, and outcomes. A task keeps the same colour across both pages. Schedule

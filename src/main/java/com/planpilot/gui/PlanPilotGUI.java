@@ -72,6 +72,9 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private Label statusLabel;
     private javafx.animation.Timeline progressTimer;
     private String selectedProgressSessionId;
+    private boolean progressHistorySelected;
+    private final java.util.Set<TaskStatus> expandedTaskGroups = java.util.EnumSet.of(
+            TaskStatus.IN_PROGRESS, TaskStatus.NOT_STARTED);
     private final javafx.beans.property.BooleanProperty aiBusy = new javafx.beans.property.SimpleBooleanProperty(false);
     private Page currentPage = Page.OVERVIEW;
     private Schedule displayedSchedule;
@@ -95,6 +98,14 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         PlanPilotApplicationContext context =
                 PlanPilotApplicationFactory.createDefault();
         controller = context.controller();
+        displayedSchedule = controller.getCurrentSchedule().orElse(null);
+        lastInfeasibility = controller.getCurrentInfeasibility().orElse(null);
+        if (displayedSchedule != null) {
+            planningStart = displayedSchedule.getStartDate();
+            planningEnd = displayedSchedule.getEndDate();
+            scheduleMayBeOutdated = displayedSchedule.getStatus() == com.planpilot.domain.ScheduleStatus.OUTDATED;
+            if (lastInfeasibility != null) scheduleWarning = partialPlanMessage(lastInfeasibility);
+        }
         eventPublisher = context.eventPublisher();
         eventPublisher.subscribe(this);
 
@@ -328,28 +339,26 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
     private Node createTasksPage() {
         List<Task> tasks = controller.getTasks();
-        ListView<Task> taskList = new ListView<>(FXCollections.observableArrayList(tasks));
-        taskList.setPlaceholder(new Label("No tasks yet. Add one using the form."));
-        taskList.setCellFactory(view -> new ListCell<>() {
-            @Override protected void updateItem(Task task, boolean empty) {
-                super.updateItem(task, empty); setText(null);
-                if (empty || task == null) { setGraphic(null); return; }
-                Label title = new Label(task instanceof AcademicTask academic
-                        ? academic.getCourse().getCode() + ": " + task.getTitle() : task.getTitle());
-                title.getStyleClass().add("session-title"); title.setWrapText(true);
-                Label deadline = new Label("Due " + task.getDeadline().format(DateTimeFormatter.ofPattern("MMM d, yyyy · h:mm a")));
-                deadline.setWrapText(true);
-                Label effort = new Label(String.format("%.1f hours remaining of %.1f estimated",
-                        task.getRemainingHours(), task.getEstimatedHours()));
-                effort.setWrapText(true);
-                Label status = new Label(task.getStatus().name().replace('_', ' ')
-                        + (task.getDeferredUntil() == null ? "" : " — Deferred until " + task.getDeferredUntil().toLocalDate()));
-                VBox card = new VBox(6, title, deadline, effort, status);
-                card.getStyleClass().add("session-card");
-                card.setStyle("-fx-border-color: " + taskColour(task) + ";");
-                card.prefWidthProperty().bind(view.widthProperty().subtract(40));
-                setGraphic(card);
-            }
+        var selectedTask = new javafx.beans.property.SimpleObjectProperty<Task>();
+        List<ListView<Task>> taskLists = new java.util.ArrayList<>();
+        VBox taskGroups = new VBox(10);
+        taskGroups.setMinWidth(340);
+        if (tasks.isEmpty()) taskGroups.getChildren().add(new Label("No tasks yet. Add one using the form."));
+        PlanningViewGroups.tasksByStatus(tasks).forEach((status, groupedTasks) -> {
+            ListView<Task> list = createTaskList(groupedTasks);
+            taskLists.add(list);
+            list.getSelectionModel().selectedItemProperty().addListener((obs, oldTask, task) -> {
+                if (task == null) return;
+                taskLists.stream().filter(other -> other != list)
+                        .forEach(other -> other.getSelectionModel().clearSelection());
+                selectedTask.set(task);
+            });
+            TitledPane group = new TitledPane(taskStatusLabel(status) + " (" + groupedTasks.size() + ")", list);
+            group.setExpanded(expandedTaskGroups.contains(status));
+            group.expandedProperty().addListener((obs, oldValue, expanded) -> {
+                if (expanded) expandedTaskGroups.add(status); else expandedTaskGroups.remove(status);
+            });
+            taskGroups.getChildren().add(group);
         });
 
         ComboBox<String> kindField = new ComboBox<>(
@@ -486,37 +495,32 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         deleteButton.setDisable(true);
         addButton.setOnAction(event -> executeAction(
                 "Task added", () -> controller.addTask(taskFromForm.apply(null))));
-        taskList.getSelectionModel().selectedIndexProperty().addListener(
-                (observable, oldIndex, newIndex) -> {
-                    int index = newIndex.intValue();
-                    if (index < 0 || index >= tasks.size()) {
-                        return;
-                    }
-                    Task selected = tasks.get(index);
-                    titleField.setText(selected.getTitle());
-                    deadlineDate.setValue(selected.getDeadline().toLocalDate());
-                    deadlineTime.setText(selected.getDeadline().toLocalTime().toString());
-                    effortField.setText(Double.toString(selected.getEstimatedHours()));
-                    difficultyField.setValue(selected.getDifficulty());
-                    importanceField.setValue(selected.getUserImportance());
-                    if (selected instanceof AcademicTask academicTask) {
-                        kindField.setValue("Academic");
-                        courseField.setValue(academicTask.getCourse());
-                        weightField.setText(Double.toString(
-                                academicTask.getAssessmentWeight()));
-                        academicTypeField.setValue(academicTask.getTaskType());
-                    } else {
-                        kindField.setValue("General");
-                        courseField.setValue(null);
-                        weightField.clear();
-                    }
-                    updateAcademicFields.run();
-                    addButton.setDisable(true);
-                    updateButton.setDisable(false);
-                    deleteButton.setDisable(false);
-                });
+        selectedTask.addListener((observable, oldTask, selected) -> {
+            if (selected == null) return;
+            titleField.setText(selected.getTitle());
+            deadlineDate.setValue(selected.getDeadline().toLocalDate());
+            deadlineTime.setText(selected.getDeadline().toLocalTime().toString());
+            effortField.setText(Double.toString(selected.getEstimatedHours()));
+            difficultyField.setValue(selected.getDifficulty());
+            importanceField.setValue(selected.getUserImportance());
+            if (selected instanceof AcademicTask academicTask) {
+                kindField.setValue("Academic");
+                courseField.setValue(academicTask.getCourse());
+                weightField.setText(Double.toString(
+                        academicTask.getAssessmentWeight()));
+                academicTypeField.setValue(academicTask.getTaskType());
+            } else {
+                kindField.setValue("General");
+                courseField.setValue(null);
+                weightField.clear();
+            }
+            updateAcademicFields.run();
+            addButton.setDisable(true);
+            updateButton.setDisable(false);
+            deleteButton.setDisable(false);
+        });
         updateButton.setOnAction(event -> executeAction("Task updated", () -> {
-            Task selected = selectedItem(taskList, tasks, "task");
+            Task selected = requiredValue(selectedTask.get(), "Task");
             Task updated = taskFromForm.apply(selected.getId());
             updated.setDeferredUntil(selected.getDeferredUntil());
             updated.setCompletedHours(selected.getCompletedHours());
@@ -526,23 +530,67 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             controller.updateTask(updated);
         }));
         deleteButton.setOnAction(event -> {
-            Task selected = selectedItem(taskList, tasks, "task");
+            Task selected = requiredValue(selectedTask.get(), "Task");
             if (confirmChange("Delete task " + selected.getTitle() + "?", "The task leaves the active list. Recorded session history is kept."))
                 executeAction("Task deleted", () -> controller.deleteTask(selected.getId()));
         });
         clearButton.setOnAction(event -> showPage(Page.TASKS));
         Button resumeButton = new Button("Include deferred task again");
         resumeButton.setDisable(true);
-        taskList.getSelectionModel().selectedItemProperty().addListener((obs, oldTask, task) ->
+        selectedTask.addListener((obs, oldTask, task) ->
                 resumeButton.setDisable(task == null || task.getDeferredUntil() == null));
         resumeButton.setOnAction(event -> executeAction("Task included again; replan when ready", () ->
-                controller.resumeTask(selectedItem(taskList, tasks, "task").getId())));
+                controller.resumeTask(requiredValue(selectedTask.get(), "Task").getId())));
 
         return createManagementPage(
                 "Tasks", "Add a task manually or describe it to have AI fill the form.",
-                taskList, createEditor(
+                taskGroups, createEditor(
                         "Add or Edit Task", taskFields,
                         addButton, updateButton, deleteButton, clearButton, resumeButton));
+    }
+
+    private ListView<Task> createTaskList(List<Task> tasks) {
+        ListView<Task> taskList = new ListView<>(FXCollections.observableArrayList(tasks));
+        taskList.setPlaceholder(new Label("No tasks in this status."));
+        taskList.setMinHeight(100);
+        taskList.setPrefHeight(Math.min(440, Math.max(110, tasks.size() * 155)));
+        taskList.setCellFactory(view -> new ListCell<>() {
+            @Override protected void updateItem(Task task, boolean empty) {
+                super.updateItem(task, empty); setText(null);
+                if (empty || task == null) { setGraphic(null); return; }
+                Label title = new Label(task instanceof AcademicTask academic
+                        ? academic.getCourse().getCode() + ": " + task.getTitle() : task.getTitle());
+                title.getStyleClass().add("session-title"); title.setWrapText(true);
+                Label deadline = new Label("Due " + task.getDeadline().format(DateTimeFormatter.ofPattern("MMM d, yyyy · h:mm a")));
+                deadline.setWrapText(true);
+                Label effort = new Label(String.format("%.1f hours remaining of %.1f estimated",
+                        task.getRemainingHours(), task.getEstimatedHours()));
+                effort.setWrapText(true);
+                Label status = new Label(taskStatusLabel(task.getStatus())
+                        + (controller.getInferredHours(task) > 0 ? " — includes tentative progress" : "")
+                        + (task.getDeferredUntil() == null ? "" : " — Deferred until " + task.getDeferredUntil().toLocalDate()));
+                VBox card = new VBox(6, title, deadline, effort, status);
+                card.getStyleClass().add("session-card");
+                card.setStyle("-fx-border-color: " + taskColour(task) + ";");
+                card.prefWidthProperty().bind(view.widthProperty().subtract(40));
+                setGraphic(card);
+            }
+        });
+        return taskList;
+    }
+
+    private static String taskStatusLabel(TaskStatus status) {
+        return switch (status) {
+            case IN_PROGRESS -> "In progress";
+            case NOT_STARTED -> "Not started";
+            case COMPLETED -> "Completed";
+            case SKIPPED -> "Skipped";
+        };
+    }
+
+    private static String taskTitle(Task task) {
+        return task instanceof AcademicTask academic
+                ? academic.getCourse().getCode() + ": " + task.getTitle() : task.getTitle();
     }
 
     private Node createAiAssistantPage() {
@@ -1140,11 +1188,14 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             card.getStyleClass().add("panel"); taskCards.getChildren().add(card);
         }
 
-        ListView<StudyBlock> blockList = createSessionList(blocks, "Generate a schedule first to record study progress.");
+        List<StudyBlock> pending = PlanningViewGroups.sessionsForView(blocks, false);
+        List<StudyBlock> historical = PlanningViewGroups.sessionsForView(blocks, true);
+        var selectedSession = new javafx.beans.property.SimpleObjectProperty<StudyBlock>();
+        List<ListView<StudyBlock>> sessionLists = new java.util.ArrayList<>();
         ListView<String> historyList = new ListView<>();
-        historyList.setPrefHeight(200);
-        historyList.setPlaceholder(new Label("Select a session to see its task's correction history."));
-        Label selectionHelp = new Label("Select a session to confirm or correct its result.");
+        historyList.setPrefHeight(160);
+        historyList.setPlaceholder(new Label("No recorded corrections for this session."));
+        Label selectionHelp = new Label("Choose a session within a task group.");
         selectionHelp.setWrapText(true);
         TextField partialHoursField = new TextField();
         partialHoursField.setPromptText("Actual hours, from 0 to session duration");
@@ -1152,58 +1203,115 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         Button partialButton = new Button("Save actual hours");
         Button skippedButton = new Button("Mark skipped");
         completedButton.setOnAction(event -> {
-            StudyBlock block = selectedBlock(blockList, blocks);
-            if (block != null) recordProgress(block, ProgressStatus.COMPLETED, block.durationHours(), "Session confirmed completed");
+            StudyBlock block = selectedSession.get();
+            if (block != null) recordProgress(block, ProgressStatus.COMPLETED, block.durationHours(), "Session moved to History");
         });
         partialButton.setOnAction(event -> {
-            StudyBlock block = selectedBlock(blockList, blocks);
+            StudyBlock block = selectedSession.get();
             if (block != null) {
-                try { recordProgress(block, ProgressStatus.PARTIAL, nonNegativeDouble(partialHoursField, "Actual completed hours"), "Actual hours saved"); }
+                try { recordProgress(block, ProgressStatus.PARTIAL, nonNegativeDouble(partialHoursField, "Actual completed hours"), "Actual hours saved in History; remaining effort is still tracked"); }
                 catch (RuntimeException failure) { showError(errorMessage(failure)); }
             }
         });
         skippedButton.setOnAction(event -> {
-            StudyBlock block = selectedBlock(blockList, blocks);
-            if (block != null) recordProgress(block, ProgressStatus.SKIPPED, 0, "Session marked skipped");
+            StudyBlock block = selectedSession.get();
+            if (block != null) recordProgress(block, ProgressStatus.SKIPPED, 0, "Session moved to History; remaining effort is still tracked");
         });
         for (Button button : List.of(completedButton, partialButton, skippedButton)) {
-            button.disableProperty().bind(blockList.getSelectionModel().selectedItemProperty().isNull());
+            button.disableProperty().bind(selectedSession.isNull());
         }
-        blockList.getSelectionModel().selectedIndexProperty().addListener((obs, oldIndex, newIndex) -> {
-            int index = newIndex.intValue(); if (index < 0 || index >= blocks.size()) return;
-            StudyBlock block = blocks.get(index); selectedProgressSessionId = block.getId();
-            selectionHelp.setText(String.format("%s · %.2f h session. %s", block.getTask().getTitle(), block.durationHours(),
-                    block.isInferred() ? "Tentatively inferred — awaiting your confirmation." : "Save a correction to replace this session's previous result."));
+        selectedSession.addListener((obs, oldBlock, block) -> {
             partialHoursField.clear();
+            if (block == null) {
+                selectionHelp.setText("Choose a session within a task group.");
+                historyList.getItems().clear();
+                return;
+            }
+            selectedProgressSessionId = block.getId();
+            selectionHelp.setText(String.format("%s · %.2f h session. %s", taskTitle(block.getTask()), block.durationHours(),
+                    block.isInferred() ? "Tentative — confirm or correct this session." : "Saving replaces this session's previous result."));
             historyList.setItems(FXCollections.observableArrayList(controller.getProgressHistory(block.getTask())
-                    .stream().map(this::formatProgressRecord).toList()));
+                    .stream().filter(record -> record.getStudyBlock().getId().equals(block.getId()))
+                    .map(this::formatProgressRecord).toList()));
         });
-        for (int index = 0; index < blocks.size(); index++) {
-            if (blocks.get(index).getId().equals(selectedProgressSessionId)) blockList.getSelectionModel().select(index);
-        }
-        if (blockList.getSelectionModel().isEmpty() && !blocks.isEmpty()) blockList.getSelectionModel().selectFirst();
+        javafx.scene.control.Tab pendingTab = new javafx.scene.control.Tab("To confirm (" + pending.size() + ")",
+                createGroupedProgressSessions(pending, selectedSession, sessionLists, false));
+        javafx.scene.control.Tab historyTab = new javafx.scene.control.Tab("History (" + historical.size() + ")",
+                createGroupedProgressSessions(historical, selectedSession, sessionLists, true));
+        javafx.scene.control.TabPane sessionTabs = new javafx.scene.control.TabPane(pendingTab, historyTab);
+        sessionTabs.setTabClosingPolicy(javafx.scene.control.TabPane.TabClosingPolicy.UNAVAILABLE);
+        sessionTabs.setMinWidth(340);
+        Runnable restoreSelection = () -> {
+            sessionLists.forEach(list -> list.getSelectionModel().clearSelection());
+            selectedSession.set(null);
+            List<ListView<StudyBlock>> visibleLists = sessionLists.stream()
+                    .filter(list -> !list.getItems().isEmpty()
+                            && PlanningViewGroups.needsConfirmation(list.getItems().get(0)) != progressHistorySelected).toList();
+            for (ListView<StudyBlock> list : visibleLists) {
+                for (StudyBlock block : list.getItems()) {
+                    if (block.getId().equals(selectedProgressSessionId)) {
+                        list.getSelectionModel().select(block);
+                        return;
+                    }
+                }
+            }
+            if (!visibleLists.isEmpty()) visibleLists.get(0).getSelectionModel().selectFirst();
+        };
+        sessionTabs.getSelectionModel().select(progressHistorySelected ? historyTab : pendingTab);
+        sessionTabs.getSelectionModel().selectedItemProperty().addListener((obs, oldTab, tab) -> {
+            progressHistorySelected = tab == historyTab;
+            restoreSelection.run();
+        });
+        restoreSelection.run();
+        TitledPane correctionDetails = new TitledPane("Correction history for selected session", historyList);
+        correctionDetails.setExpanded(false);
         VBox editor = createEditor("Session result", new VBox(8, selectionHelp,
-                new Label("Partially completed — actual hours:"), partialHoursField),
+                new Label("Partially completed — actual hours:"), partialHoursField, correctionDetails),
                 completedButton, partialButton, skippedButton);
-        HBox sessionsPanel = new HBox(16, blockList, editor);
-        HBox.setHgrow(blockList, Priority.ALWAYS);
+        HBox sessionsPanel = new HBox(16, sessionTabs, editor);
+        HBox.setHgrow(sessionTabs, Priority.ALWAYS);
         Label warning = new Label(scheduleMayBeOutdated ? "Workload changed. Review Schedule and replan when you choose." : "");
         warning.setWrapText(true);
-        VBox content = new VBox(16, totals, outcomes, inferenceNote, warning,
-                new Label("Task progress (bars show confirmed hours)"), taskCards,
-                new Label("Study sessions — select one to record or correct"), sessionsPanel,
-                new Label("History for selected task"), historyList);
-        return createPage("Progress", "Review confirmed work, tentative progress, and remaining effort.", content);
+        TitledPane taskSummary = new TitledPane("Task progress (" + tasks.size() + ") — confirmed hours", taskCards);
+        taskSummary.setExpanded(false);
+        VBox content = new VBox(16, totals, outcomes, inferenceNote, warning, sessionsPanel, taskSummary);
+        return createPage("Progress", "Confirm sessions by task. Recorded results stay in History and can be corrected there.", content);
     }
 
-    private StudyBlock selectedBlock(
-            ListView<?> blockList, List<StudyBlock> blocks) {
-        int selectedIndex = blockList.getSelectionModel().getSelectedIndex();
-        if (selectedIndex < 0 || selectedIndex >= blocks.size()) {
-            showError("Select a study block first.");
-            return null;
+    private Node createGroupedProgressSessions(
+            List<StudyBlock> blocks,
+            javafx.beans.property.ObjectProperty<StudyBlock> selection,
+            List<ListView<StudyBlock>> sessionLists,
+            boolean history) {
+        VBox groups = new VBox(10);
+        groups.setPadding(new Insets(12, 0, 0, 0));
+        if (blocks.isEmpty()) {
+            Label empty = new Label(history ? "No recorded sessions yet. Completed, partial, and skipped results appear here."
+                    : "No sessions to confirm. Generate a schedule for more work, or review recorded sessions in History.");
+            empty.setWrapText(true);
+            groups.getChildren().add(empty);
         }
-        return blocks.get(selectedIndex);
+        PlanningViewGroups.sessionsByTask(blocks).forEach((taskId, sessions) -> {
+            ListView<StudyBlock> list = createSessionList(sessions, "No sessions.");
+            list.setMinHeight(130);
+            list.setPrefHeight(Math.min(420, Math.max(160, sessions.size() * 180)));
+            sessionLists.add(list);
+            list.getSelectionModel().selectedItemProperty().addListener((obs, oldBlock, block) -> {
+                if (block == null) return;
+                sessionLists.stream().filter(other -> other != list)
+                        .forEach(other -> other.getSelectionModel().clearSelection());
+                selection.set(block);
+            });
+            Task task = sessions.get(0).getTask();
+            TitledPane group = new TitledPane(taskTitle(task) + " (" + sessions.size() + " sessions)", list);
+            group.setExpanded(!history || sessions.stream().anyMatch(block -> block.getId().equals(selectedProgressSessionId)));
+            group.setStyle("-fx-border-color: " + taskColour(task) + "; -fx-border-width: 0 0 0 4;");
+            list.getSelectionModel().selectedItemProperty().addListener((obs, oldBlock, block) -> {
+                if (block != null) group.setExpanded(true);
+            });
+            groups.getChildren().add(group);
+        });
+        return groups;
     }
 
     private void recordProgress(
@@ -1390,7 +1498,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             case TASKS -> "Start with task type, title, due date, and estimated hours. Academic tasks also need a course. Priority settings are optional.";
             case AVAILABILITY -> "Add time marked Available for study. To change an existing window, select it, edit the times, and press Save changes. Add classes and other commitments so the planner avoids them.";
             case SCHEDULE -> "Choose dates and generate or replan remaining work. Only upcoming sessions appear below; reported sessions stay in retained history and Progress. Matching colours indicate the same task. Unchanged inputs can produce the same times.";
-            case PROGRESS -> "Select a scheduled block and record what happened. For partial work, enter the hours completed. Progress changes never regenerate a schedule automatically.";
+            case PROGRESS -> "Open a task group in To confirm and select a session. Saved results move to History, where you can correct them. Tentative progress stays here until confirmed. Replanning always requires your action.";
             case AI_ASSISTANT -> "AI tools are optional. Review estimates and schedule recommendations before applying them.";
         };
     }

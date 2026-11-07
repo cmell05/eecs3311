@@ -36,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlanPilotCLITest {
+    @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory;
     @Test
     void addsAndListsCourseThroughMenu() {
         String input = String.join("\n",
@@ -171,7 +172,8 @@ class PlanPilotCLITest {
     }
 
     private String runCli(String input) {
-        return runCli(input, PlanPilotCLI.createDefaultController());
+        return runCli(input, com.planpilot.config.PlanPilotApplicationFactory.create(
+                directory.resolve(java.util.UUID.randomUUID() + ".json"), java.time.Clock.systemDefaultZone()).controller());
     }
 
     private String runCli(String input, PlanPilotController controller) {

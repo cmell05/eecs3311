@@ -18,6 +18,14 @@ public class ProgressService {
     private final PlanningEventPublisher eventPublisher;
     private final Clock clock;
     private final Path journal;
+    private WorkspaceSnapshot restoredWorkspace;
+    private java.util.function.Supplier<WorkspaceSnapshot> workspaceSnapshot = () -> restoredWorkspace;
+
+    public Optional<WorkspaceSnapshot> getRestoredWorkspace() { return Optional.ofNullable(restoredWorkspace); }
+
+    public void setWorkspaceSnapshotSupplier(java.util.function.Supplier<WorkspaceSnapshot> supplier) {
+        workspaceSnapshot = Objects.requireNonNull(supplier);
+    }
 
     public ProgressService() { this(new PlanningEventPublisher()); }
     public ProgressService(PlanningEventPublisher publisher) { this(publisher, Clock.systemDefaultZone(), null); }
@@ -26,7 +34,7 @@ public class ProgressService {
         this.clock = Objects.requireNonNull(clock);
         this.journal = journal;
         if (journal != null) {
-            ProgressJournal.load(journal, tasks, sessions, history, baselines, originalEstimates, archivedTasks);
+            restoredWorkspace = ProgressJournal.load(journal, tasks, sessions, history, baselines, originalEstimates, archivedTasks);
             tasks.values().forEach(this::recalculate);
         }
     }
@@ -129,10 +137,9 @@ public class ProgressService {
         boolean changed = false;
         for (StudyBlock block : getSessions()) {
             if (latest(block.getId()) == null && !block.getEnd().isAfter(LocalDateTime.now(clock))) {
-                double before = block.getTask().getCompletedHours();
                 double hours = Math.min(block.durationHours(), block.getTask().getRemainingHours());
                 record(block, hours == block.durationHours() ? ProgressStatus.COMPLETED : ProgressStatus.PARTIAL, hours, true);
-                changed |= before != block.getTask().getCompletedHours();
+                changed = true;
             }
         }
         return changed;
@@ -146,7 +153,9 @@ public class ProgressService {
         double total = baselines.getOrDefault(task.getId(), task.getCompletedHours())
                 + latestRecords().values().stream().filter(r -> r.getTask().getId().equals(task.getId()))
                 .mapToDouble(ProgressRecord::getCompletedHours).sum();
+        boolean skipped = task.getStatus() == TaskStatus.SKIPPED;
         task.setCompletedHours(Math.min(task.getEstimatedHours(), total));
+        if (skipped) task.markSkipped();
     }
 
     public double getConfirmedHours(Task task) {
@@ -171,6 +180,6 @@ public class ProgressService {
     public void checkpoint() { save(); }
 
     private void save() {
-        if (journal != null) ProgressJournal.save(journal, tasks, sessions, history, baselines, originalEstimates, archivedTasks);
+        if (journal != null) ProgressJournal.save(journal, tasks, sessions, history, baselines, originalEstimates, archivedTasks, workspaceSnapshot.get());
     }
 }
