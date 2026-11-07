@@ -149,6 +149,7 @@ public class ScheduleService {
             Schedule planned, List<StudyBlock> completedBlocks) {
         Schedule merged = new Schedule(
                 planned.getId(), planned.getStartDate(), planned.getEndDate());
+        planned.getDecisionEvidence().ifPresent(merged::setDecisionEvidence);
         List<StudyBlock> blocks = new ArrayList<>(planned.getStudyBlocks());
         blocks.addAll(completedBlocks);
         blocks.stream()
@@ -156,6 +157,10 @@ public class ScheduleService {
                         .thenComparing(StudyBlock::getId))
                 .forEach(merged::addStudyBlock);
         return merged;
+    }
+
+    public com.planpilot.domain.PriorityAssessment assessCurrentPriorities() {
+        return schedulePlanner.assessPriorities(taskService.getOpenTasks());
     }
 
     public UserPreferences getPreferences() {

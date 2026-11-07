@@ -3,6 +3,9 @@ package com.planpilot.service;
 import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.AvailabilityType;
 import com.planpilot.domain.Schedule;
+import com.planpilot.domain.PriorityAssessment;
+import com.planpilot.domain.SchedulingEvidence;
+import com.planpilot.domain.AcademicTask;
 import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.StudyPeriod;
 import com.planpilot.domain.Task;
@@ -41,6 +44,32 @@ public class SchedulePlanner {
                 priorityStrategy, "Priority strategy cannot be null.");
         this.conflictDetector = Objects.requireNonNull(
                 conflictDetector, "Conflict detector cannot be null.");
+    }
+
+    /** Evaluate current workload without constructing, replacing, or changing a schedule. */
+    public PriorityAssessment assessPriorities(List<? extends Task> tasks) {
+        Objects.requireNonNull(tasks, "Tasks cannot be null.");
+        LocalDateTime now = LocalDateTime.now(clock);
+        var scores = new java.util.LinkedHashMap<String, com.planpilot.strategy.PriorityEvaluation>();
+        List<Task> openTasks = tasks.stream().<Task>map(Objects::requireNonNull)
+                .filter(task -> task.getRemainingHours() > EPSILON).toList();
+        openTasks.forEach(task -> scores.put(task.getId(), priorityStrategy.evaluate(task, now)));
+        List<Task> ordered = openTasks.stream().sorted(Comparator
+                .<Task>comparingDouble(task -> scores.get(task.getId()).score()).reversed()
+                .thenComparing(Task::getDeadline).thenComparing(Task::getId)).toList();
+        List<PriorityAssessment.TaskPriority> facts = new ArrayList<>();
+        for (Task task : ordered) {
+            var score = scores.get(task.getId());
+            facts.add(new PriorityAssessment.TaskPriority(task.getId(), task.getTitle(),
+                    task instanceof AcademicTask academic ? academic.getCourse().getCode() : null,
+                    task.getDeadline().toString(), Duration.between(now, task.getDeadline()).toSeconds() / 3600.0,
+                    task.getRemainingHours(), task.getDifficulty(), task.getUserImportance(),
+                    task instanceof AcademicTask academic ? academic.getAssessmentWeight() : null,
+                    task.getDeferredUntil() == null ? null : task.getDeferredUntil().toString(),
+                    score.score(), score.contributions(), score.rule(), facts.size() + 1));
+        }
+        return new PriorityAssessment(now.toString(),
+                priorityStrategy.getClass().isSynthetic() ? "Custom PriorityStrategy" : priorityStrategy.getClass().getSimpleName(), facts);
     }
 
     public Schedule createSchedule(
@@ -84,13 +113,18 @@ public class SchedulePlanner {
 
         String scheduleId = "schedule-" + java.util.UUID.randomUUID();
         Schedule schedule = new Schedule(scheduleId, startDate, endDate);
-        List<Task> prioritizedTasks = tasks.stream()
+        var scores = new java.util.LinkedHashMap<String, com.planpilot.strategy.PriorityEvaluation>();
+        List<Task> eligibleTasks = tasks.stream()
                 .<Task>map(Objects::requireNonNull)
                 .filter(task -> task.getRemainingHours() > EPSILON)
                 .filter(task -> task.getDeferredUntil() == null
                         || task.getDeferredUntil().isBefore(endDate.plusDays(1).atStartOfDay()))
+                .toList();
+        // Evaluate once at one captured time; the same values drive ordering and explanations.
+        eligibleTasks.forEach(task -> scores.put(task.getId(), priorityStrategy.evaluate(task, now)));
+        List<Task> prioritizedTasks = eligibleTasks.stream()
                 .sorted(Comparator
-                        .comparingDouble(priorityStrategy::calculatePriority)
+                        .<Task>comparingDouble(task -> scores.get(task.getId()).score())
                         .reversed()
                         .thenComparing(Task::getDeadline)
                         .thenComparing(Task::getId))
@@ -112,11 +146,16 @@ public class SchedulePlanner {
             releasedSlots = partitioned;
         }
         List<TimeSlot> slots = prioritizeStudyPeriod(releasedSlots, preferences.getPreferredStudyPeriod());
+        List<SchedulingEvidence.SlotFact> initialSlots = slots.stream()
+                .map(slot -> new SchedulingEvidence.SlotFact(slot.cursor.toString(), slot.end.toString())).toList();
+        List<SchedulingEvidence.TaskDecision> decisions = new ArrayList<>();
         List<String> reasons = new ArrayList<>();
         long unscheduledMinutes = 0;
         int blockNumber = 1;
         for (Task task : prioritizedTasks) {
             long remainingMinutes = (long) Math.ceil(task.getRemainingHours() * 60.0);
+            List<SchedulingEvidence.Placement> placements = new ArrayList<>();
+            String unscheduledReason = "";
             for (TimeSlot slot : slots) {
                 if (task.getDeferredUntil() != null && slot.cursor.isBefore(task.getDeferredUntil())) continue;
                 if (remainingMinutes == 0) {
@@ -134,9 +173,13 @@ public class SchedulePlanner {
                     }
 
                     LocalDateTime blockEnd = slot.cursor.plusMinutes(sessionMinutes);
-                    schedule.addStudyBlock(new StudyBlock(
-                            scheduleId + "-block-" + blockNumber,
-                            task, slot.cursor, blockEnd));
+                    String sessionId = scheduleId + "-block-" + blockNumber;
+                    schedule.addStudyBlock(new StudyBlock(sessionId, task, slot.cursor, blockEnd));
+                    placements.add(new SchedulingEvidence.Placement(sessionId, slot.cursor.toString(), blockEnd.toString(),
+                            slots.indexOf(slot) + 1, remainingMinutes, availableMinutes, sessionMinutes,
+                            "First remaining eligible slot in preferred-period-first order, with chronological fallback; "
+                            + "duration is min(remaining task minutes, available minutes before deadline, max session minutes). "
+                            + "The slot cursor advances by the recorded break length after allocation."));
                     blockNumber++;
                     remainingMinutes -= sessionMinutes;
                     slot.cursor = blockEnd.plusMinutes(preferences.getBreakLength());
@@ -156,10 +199,38 @@ public class SchedulePlanner {
                 } else {
                     reason = "Not enough study time remains before the deadline, including session breaks.";
                 }
+                unscheduledReason = reason;
                 reasons.add(task.getTitle() + ": " + reason);
             }
             unscheduledMinutes += remainingMinutes;
+            int rank = decisions.size() + 1;
+            String orderingReason = "First task in allocation order (highest score, then deadline, then task ID).";
+            if (!decisions.isEmpty()) {
+                var previous = decisions.get(decisions.size() - 1);
+                orderingReason = Double.compare(previous.priorityScore(), scores.get(task.getId()).score()) != 0
+                        ? "Lower calculated score than the preceding task."
+                        : !previous.deadline().equals(task.getDeadline().toString())
+                            ? "Equal calculated score; the earlier deadline is allocated first."
+                            : "Equal calculated score and deadline; stable internal task ID breaks the tie.";
+            }
+            var evaluation = scores.get(task.getId());
+            decisions.add(new SchedulingEvidence.TaskDecision(task.getId(), task.getTitle(),
+                    task instanceof AcademicTask academic ? academic.getCourse().getCode() : null,
+                    task.getDeadline().toString(), task.getDeferredUntil() == null ? null : task.getDeferredUntil().toString(),
+                    task.getEstimatedHours(), task.getCompletedHours(), task.getRemainingHours(), task.getDifficulty(),
+                    task.getUserImportance(), task instanceof AcademicTask academic ? academic.getAssessmentWeight() : null,
+                    evaluation.score(), evaluation.contributions(), evaluation.rule(), rank, orderingReason, placements,
+                    remainingMinutes / 60.0, unscheduledReason));
         }
+        schedule.setDecisionEvidence(new SchedulingEvidence(now.toString(), earliestStart.toString(),
+                priorityStrategy.getClass().isSynthetic() ? "Custom PriorityStrategy" : priorityStrategy.getClass().getSimpleName(),
+                "Consider unfinished tasks whose deferred release is before the planning window ends. "
+                + "Allocate tasks by descending score, then earlier deadline, then task ID. "
+                + "Respect release times, the planning cutoff, available time and deadlines. "
+                + "Allocation rank is not necessarily chronological session order: preferred periods are attempted before fallback slots.",
+                preferences.getPreferredStudyPeriod(), preferences.getMaxSessionLength(), preferences.getBreakLength(),
+                availability.stream().map(block -> new SchedulingEvidence.AvailabilityFact(block.getId(), block.getType(),
+                        block.getStart().toString(), block.getEnd().toString())).toList(), initialSlots, decisions));
 
         if (!conflictDetector.isScheduleFeasible(schedule, availability)) {
             throw new IllegalStateException(

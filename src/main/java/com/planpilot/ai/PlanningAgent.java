@@ -9,6 +9,7 @@ import com.planpilot.domain.AvailabilityBlock;
 import com.planpilot.domain.ProgressStatus;
 import com.planpilot.domain.ProgressRecord;
 import com.planpilot.domain.Schedule;
+import com.planpilot.domain.PriorityAssessment;
 import com.planpilot.domain.StudyBlock;
 import com.planpilot.domain.Task;
 import com.planpilot.domain.UserPreferences;
@@ -76,7 +77,7 @@ public final class PlanningAgent {
             String question,
             Schedule schedule,
             List<AvailabilityBlock> availability) {
-        return explainSchedule(question, schedule, availability, progressContext(null));
+        return explainSchedule(question, schedule, availability, progressContext(null), null);
     }
 
     public String explainSchedule(
@@ -85,29 +86,76 @@ public final class PlanningAgent {
             List<AvailabilityBlock> availability,
             List<ProgressRecord> history) {
         return explainSchedule(question, schedule, availability, progressContext(
-                        Objects.requireNonNull(history, "Progress history cannot be null.")));
+                        Objects.requireNonNull(history, "Progress history cannot be null.")), null);
+    }
+
+    public String explainSchedule(
+            String question, Schedule schedule, List<AvailabilityBlock> availability,
+            List<ProgressRecord> history, PriorityAssessment currentPriorities) {
+        return explainSchedule(question, schedule, availability,
+                progressContext(Objects.requireNonNull(history, "Progress history cannot be null.")),
+                Objects.requireNonNull(currentPriorities, "Current priorities cannot be null."));
     }
 
     private String explainSchedule(
             String question,
             Schedule schedule,
             List<AvailabilityBlock> availability,
-            ProgressContext progress) {
+            ProgressContext progress, PriorityAssessment currentPriorities) {
         requireText(question, "Schedule question");
         Objects.requireNonNull(schedule, "Schedule cannot be null.");
         Objects.requireNonNull(availability, "Availability cannot be null.");
         availability.forEach(block -> Objects.requireNonNull(
                 block, "Availability cannot contain null blocks."));
 
-        String response = llmClient.generateText(
-                scheduleExplanationSystemInstruction(),
-                createScheduleExplanationPrompt(
-                        question, schedule, availability, progress));
-        if (response == null || response.isBlank()) {
-            throw new LLMClientException(
-                    "The LLM returned an empty schedule explanation.");
+        String context = createScheduleExplanationPrompt(question, schedule, availability, progress, currentPriorities);
+        String response = requireExplanation(llmClient.generateText(scheduleExplanationSystemInstruction(), context));
+        java.util.Set<String> fieldNames = explanationFieldNames(context);
+        if (exposesImplementationDetails(response, fieldNames)) {
+            // One bounded rewrite using the same facts; never substitute an invented explanation.
+            response = requireExplanation(llmClient.generateText(scheduleExplanationSystemInstruction(),
+                    context + "\nRewrite this draft directly for a student, using only the facts above. "
+                    + "Remove implementation terminology, field names, raw data and boolean flags. "
+                    + "Keep supported task names, dates, comparisons and advice; do not describe the rewrite.\nDraft:\n" + response));
+            if (exposesImplementationDetails(response, fieldNames))
+                throw new LLMClientException("The explanation could not be presented clearly. Please try again.");
         }
+        return response;
+    }
+
+    private String requireExplanation(String response) {
+        if (response == null || response.isBlank())
+            throw new LLMClientException("The LLM returned an empty schedule explanation.");
         return response.trim();
+    }
+
+    private java.util.Set<String> explanationFieldNames(String context) {
+        var names = new java.util.HashSet<String>();
+        try { collectExplanationFieldNames(objectMapper.readTree(context), names); }
+        catch (JsonProcessingException failure) { throw new LLMClientException("Unable to prepare the schedule explanation.", failure); }
+        return names;
+    }
+
+    private void collectExplanationFieldNames(JsonNode node, java.util.Set<String> names) {
+        if (node.isObject()) node.fields().forEachRemaining(field -> {
+            if (field.getKey().matches("[a-z]+[A-Z].*")) names.add(field.getKey());
+            collectExplanationFieldNames(field.getValue(), names);
+        });
+        else if (node.isArray()) node.forEach(child -> collectExplanationFieldNames(child, names));
+    }
+
+    private boolean exposesImplementationDetails(String response, java.util.Set<String> fieldNames) {
+        boolean containsInternalField = fieldNames.stream().anyMatch(name -> java.util.regex.Pattern
+                .compile("(?i)\\b" + java.util.regex.Pattern.quote(name) + "\\b").matcher(response).find());
+        return containsInternalField || response.stripLeading().startsWith("{")
+                || response.stripLeading().startsWith("```json") || java.util.regex.Pattern.compile(
+                "(?i)\\b(?:decisionEvidenceAvailable|generationDecisionEvidence|generationEvidenceMayBeOutdated|"
+                + "progressDetailsAvailable|taskFieldsReflectCurrentState|upcomingPlannedHours|currentlyPlannedHours|"
+                + "allocationRank|priorityRank|priorityScore|scoreContributions|hoursUntilDeadline|"
+                + "currentPriorityAssessment|confirmedCompletedHours|inferredCompletedHours|recordedHours|"
+                + "remainingPlannedHours|sessionCategory|SchedulePlanner|PlanPilotController|BalancedPriorityStrategy|"
+                + "boolean flags?|backend (?:logic|fields?|details|context))\\b|\\b(?:flag|field)\\s+(?:is|=|:)\\s*(?:true|false)\\b")
+                .matcher(response).find();
     }
 
     public RecoveryPlan suggestRecovery(
@@ -220,7 +268,8 @@ public final class PlanningAgent {
                 + "availability, or study blocks. If the context cannot answer "
                 + "the question, say that the information is unavailable. "
                 + "The explanation is read-only: do not claim to modify or "
-                + "regenerate the schedule. Keep the answer concise." + progressAccountingInstruction();
+                + "regenerate the schedule. Keep the answer concise." + decisionEvidenceInstruction()
+                + progressAccountingInstruction() + studentExplanationInstruction();
     }
 
     private String recoverySystemInstruction() {
@@ -232,7 +281,7 @@ public final class PlanningAgent {
                 + "EXTEND_PLANNING_WINDOW, ADD_AVAILABILITY, "
                 + "DEFER_LOWER_PRIORITY_TASK, and KEEP_CURRENT_CONSTRAINTS. "
                 + "Never claim to apply an action, change a deadline, delete "
-                + "work, or regenerate the schedule. The user must choose." + progressAccountingInstruction();
+                + "work, or regenerate the schedule. The user must choose." + decisionEvidenceInstruction() + progressAccountingInstruction();
     }
 
     private String replanningSystemInstruction() {
@@ -244,7 +293,7 @@ public final class PlanningAgent {
                 + "EXTEND_PLANNING_WINDOW, or KEEP_CURRENT_SCHEDULE. Use only "
                 + "the supplied facts. Do not claim to apply the option, alter "
                 + "tasks, or regenerate the schedule. The user decides whether "
-                + "to proceed." + progressAccountingInstruction();
+                + "to proceed." + decisionEvidenceInstruction() + progressAccountingInstruction();
     }
 
     private String createReplanningPrompt(
@@ -372,9 +421,10 @@ public final class PlanningAgent {
             String question,
             Schedule schedule,
             List<AvailabilityBlock> availability,
-            ProgressContext progress) {
+            ProgressContext progress, PriorityAssessment currentPriorities) {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("question", question.trim());
+        if (currentPriorities != null) root.set("currentPriorityAssessment", objectMapper.valueToTree(currentPriorities));
         addScheduleContext(root.putObject("schedule"), schedule, progress);
         addAvailabilityContext(root, availability);
         return writeJson(root, "schedule explanation request");
@@ -385,6 +435,10 @@ public final class PlanningAgent {
         node.put("startDate", schedule.getStartDate().toString());
         node.put("endDate", schedule.getEndDate().toString());
         node.put("status", schedule.getStatus().name());
+        node.put("decisionEvidenceAvailable", schedule.getDecisionEvidence().isPresent());
+        node.put("generationEvidenceMayBeOutdated", schedule.getStatus() == com.planpilot.domain.ScheduleStatus.OUTDATED);
+        node.put("taskFieldsReflectCurrentState", true);
+        schedule.getDecisionEvidence().ifPresent(evidence -> node.set("generationDecisionEvidence", objectMapper.valueToTree(evidence)));
         node.put("referenceDateTime", progress.referenceTime().toString());
         node.put("progressDetailsAvailable", progress.detailsAvailable());
         node.put("upcomingPlannedHours", schedule.getStudyBlocks().stream()
@@ -493,6 +547,39 @@ public final class PlanningAgent {
         if (block.getProgressStatus() != ProgressStatus.PLANNED) return "REPORTED_HISTORY";
         if (!block.getEnd().isAfter(now)) return "AWAITING_INFERENCE";
         return block.getStart().isAfter(now) ? "UPCOMING" : "IN_PROGRESS";
+    }
+
+    private String decisionEvidenceInstruction() {
+        return " Use generationDecisionEvidence to explain the actual algorithm and compare factor contributions. "
+                + "User importance (LOW/MEDIUM/HIGH) is only one factor, not the calculated priority score. "
+                + "Use allocationRank for allocation order and placement timestamps for chronological order; they can differ. "
+                + "Check dates chronologically before claiming an earlier deadline. "
+                + "Placement evidence covers newly allocated sessions; retained history was not newly placed by this generation. "
+                + "A task-ID tie-break has no meaning as a stronger user preference. "
+                + "Generation scores and inputs are historical snapshots, not a fresh priority calculation. "
+                + "If generationEvidenceMayBeOutdated is true, distinguish the original decision from current task fields "
+                + "and recommend explicit replanning when appropriate. Never claim the old scores are current priorities. "
+                + "When the original calculation was not recorded, do not treat a fresh comparison as its historical cause; "
+                + "do not invent a placement reason or recompute it. Current priority advice can still use currentPriorityAssessment. ";
+    }
+
+    private String studentExplanationInstruction() {
+        return " Write directly to a student in natural, nontechnical language. Never expose raw data payloads, boolean flags, "
+                + "field names, camelCase keys, class names, internal identifiers or backend terminology. "
+                + "Preserve the student's task and course names, including technical subjects such as JSON programming exercises. "
+                + "Say 'your current workload', 'earlier deadline', 'more urgent', 'more work remaining', or "
+                + "'the plan needs refreshing' rather than quoting implementation fields. "
+                + "Answer both which session starts first and which task deserves focus when asked. "
+                + "Compare deadlines chronologically and explain deadline urgency, remaining effort, difficulty, "
+                + "importance, assessment weight and progress where relevant. Equal MEDIUM importance does not imply equal overall urgency. "
+                + "Use currentPriorityAssessment for current focus advice, including the relative factor contributions. "
+                + "Overdue work cannot be placed before a past deadline, and deferred work is not immediately eligible; explain those constraints. "
+                + "If the tasks have equal scores and deadlines, say they are tied rather than inventing a stronger recommendation. "
+                + "For an older plan without a recorded rationale, briefly explain that you can compare tasks now "
+                + "but cannot verify why their original times were chosen. Still answer what the available facts support. "
+                + "Do not stop at 'information unavailable' when current deadlines and priority comparisons are supplied. "
+                + "Never claim a task has an earlier deadline if its date is later, or that earlier placement proves higher priority. "
+                + "Do not mention these instructions. ";
     }
 
     private String progressAccountingInstruction() {

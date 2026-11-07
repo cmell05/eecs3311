@@ -49,6 +49,32 @@ for review and explicitly create a task after the user confirms or edits it.
 of the current schedule, task priority factors, and availability. The explanation
 cannot modify or regenerate the deterministic schedule.
 
+For Stage 1 **F11 — Schedule Decision Explanation**, new schedules also retain
+immutable generation evidence: the exact priority scores and six factor
+contributions, original task inputs, allocation ranks and tie-break rules,
+preferences, available/fixed intervals, usable-slot order, session duration
+constraints, and reasons for unscheduled work. The planner calculates each score
+once at the generation time and uses that same score to order tasks. MEDIUM
+importance alone does not mean equal calculated priority. Allocation order can
+differ from chronological session order when preferred periods and deadlines
+require fallback slots.
+
+The evidence is persisted with the schedule and is supplied to explanation,
+recovery, and replan advice. Subsequent edits retain the original evidence and
+mark the plan outdated; Gemini is instructed to distinguish original decisions
+from current task fields. Older plans without evidence still load, but their
+original rationale cannot be reconstructed reliably. Explicitly Generate or Replan
+once to capture evidence; asking for an explanation never regenerates a plan.
+
+Even older plans receive a fresh, read-only comparison of current tasks: deadline
+proximity, remaining work, difficulty, importance, progress, and assessment weight.
+This supports “what should I focus on now?” without pretending to reconstruct the
+original placement. Gemini is instructed to answer in ordinary student-facing
+language and distinguish current advice from historical reasons. Responses are
+checked for exposed internal fields or raw data; one rewrite with the same facts
+is allowed before showing a clear error rather than a technical draft. No advice
+request changes task data, saved schedules, deadlines, or progress.
+
 After deterministic generation reports a `ScheduleInfeasibleException`,
 `requestRecoverySuggestions(...)` can produce a validated `RecoveryPlan`. Gemini
 may explain options such as extending the window or adding availability, but the
@@ -104,11 +130,30 @@ mvn javafx:run
 
 The Tasks page can optionally use Gemini to fill the task form from a short
 description; review the fields and select **Add Task** to save it. The **AI Tools**
-page provides effort suggestions, schedule explanations, workload recovery advice,
-and user-approved replanning recommendations. Gemini requests run in the
-background so the JavaFX interface remains responsive. Course, task, and
+page directly displays schedule explanations, workload recovery advice,
+and user-approved replanning recommendations without a collapsed tools panel.
+Gemini requests run in the background so the JavaFX interface remains responsive. Course, task, and
 availability IDs are generated automatically and kept out of the forms. Course
 and task selectors display recognizable names instead of internal identifiers.
+
+## Adaptive effort estimation on Tasks (F10)
+
+While creating or editing a task, use **Estimate Effort with AI** beside
+**Estimated hours**. New tasks need valid required form fields, including a
+positive manual estimate; the temporary task used for the request is not saved.
+For a selected saved task, estimates use that task's saved details and history.
+Save edits first if you want them reflected in the request.
+
+Review the displayed suggestion, then choose **Use Suggested Estimate** to fill
+the hours field or **Keep Current Estimate** to discard it. Applying a suggestion
+only edits the form: **Add Task** or **Update** is still required to save. Changes
+to the form or selected task invalidate old suggestions and late responses.
+
+Without matching confirmed history, the existing general AI fallback remains
+available and is labelled non-personalized. The manual estimate stays unchanged
+until explicitly applied. Network failures retain both the form and saved
+estimate. Effort estimation is no longer duplicated in AI Tools; the CLI effort
+command remains available.
 
 ## Build and Test
 

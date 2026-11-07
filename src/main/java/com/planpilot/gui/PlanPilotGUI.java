@@ -368,6 +368,43 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         DatePicker deadlineDate = new DatePicker(LocalDate.now());
         TextField deadlineTime = new TextField("17:00");
         TextField effortField = new TextField();
+        TaskEffortEstimateModel effortEstimate = new TaskEffortEstimateModel(controller);
+        effortField.textProperty().bindBidirectional(effortEstimate.estimatedHoursProperty());
+        Button estimateEffortButton = new Button("Estimate Effort with AI");
+        estimateEffortButton.disableProperty().bind(aiBusy.or(
+                new javafx.beans.property.SimpleBooleanProperty(!controller.isAiAvailable())));
+        Label suggestionLabel = new Label();
+        suggestionLabel.textProperty().bind(javafx.beans.binding.Bindings.createStringBinding(
+                () -> effortEstimate.suggestionProperty().get() == null ? ""
+                        : String.format(java.util.Locale.ROOT, "AI suggestion: %.2f hours", effortEstimate.suggestionProperty().get()),
+                effortEstimate.suggestionProperty()));
+        suggestionLabel.setWrapText(true);
+        suggestionLabel.visibleProperty().bind(effortEstimate.suggestionProperty().isNotNull());
+        suggestionLabel.managedProperty().bind(suggestionLabel.visibleProperty());
+        Label effortMessage = new Label();
+        effortMessage.textProperty().bind(effortEstimate.messageProperty());
+        effortMessage.setWrapText(true);
+        effortMessage.visibleProperty().bind(effortMessage.textProperty().isNotEmpty());
+        effortMessage.managedProperty().bind(effortMessage.visibleProperty());
+        Button useEstimateButton = new Button("Use Suggested Estimate");
+        Button keepEstimateButton = new Button("Keep Current Estimate");
+        for (Button button : List.of(useEstimateButton, keepEstimateButton)) {
+            button.disableProperty().bind(effortEstimate.suggestionProperty().isNull().or(aiBusy));
+            button.setWrapText(true);
+        }
+        useEstimateButton.setOnAction(event -> effortEstimate.useSuggestion());
+        keepEstimateButton.setOnAction(event -> effortEstimate.keepCurrentEstimate());
+        javafx.scene.layout.FlowPane estimateActions = new javafx.scene.layout.FlowPane(6, 6, useEstimateButton, keepEstimateButton);
+        estimateActions.visibleProperty().bind(effortEstimate.suggestionProperty().isNotNull());
+        estimateActions.managedProperty().bind(estimateActions.visibleProperty());
+        Label estimateBasis = new Label();
+        estimateBasis.setWrapText(true);
+        estimateBasis.textProperty().bind(javafx.beans.binding.Bindings.createStringBinding(
+                () -> !controller.isAiAvailable() ? "Configure Gemini to enable optional AI estimates."
+                        : selectedTask.get() == null ? "Optional: estimate from the current task form."
+                        : "Uses the saved task details. Save edits first to include changes.", selectedTask));
+        VBox estimatedHoursInput = new VBox(7, effortField, estimateEffortButton, estimateBasis,
+                suggestionLabel, effortMessage, estimateActions);
         ComboBox<Integer> difficultyField = new ComboBox<>(
                 FXCollections.observableArrayList(1, 2, 3, 4, 5));
         difficultyField.setValue(3);
@@ -395,7 +432,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         addFormRow(form, 1, "Task title", titleField);
         addFormRow(form, 2, "Due date", deadlineDate);
         addFormRow(form, 3, "Due time", deadlineTime);
-        addFormRow(form, 4, "Estimated hours", effortField);
+        addFormRow(form, 4, "Estimated hours", estimatedHoursInput);
         addFormRow(form, 5, "Difficulty (1–5)", difficultyField);
         addFormRow(form, 6, "Importance", importanceField);
         GridPane detailsForm = createFormGrid();
@@ -486,6 +523,29 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                             effort, requiredValue(difficultyField.getValue(), "Difficulty"),
                             requiredValue(importanceField.getValue(), "Importance"));
         };
+
+        for (javafx.beans.Observable input : List.<javafx.beans.Observable>of(
+                titleField.textProperty(), deadlineDate.valueProperty(), deadlineTime.textProperty(),
+                difficultyField.valueProperty(), importanceField.valueProperty(), kindField.valueProperty(),
+                courseField.valueProperty(), weightField.textProperty(), academicTypeField.valueProperty(), selectedTask)) {
+            input.addListener(observable -> effortEstimate.invalidate());
+        }
+        estimateEffortButton.setOnAction(event -> {
+            try {
+                // Existing tasks retain their actual identity/history. Drafts are validated but never added here.
+                TaskEffortEstimateModel.Request request = effortEstimate.begin(
+                        selectedTask.get(), () -> taskFromForm.apply(null));
+                runAiAction(estimateEffortButton, "Requesting effort estimate…",
+                        () -> effortEstimate.fetch(request), result -> {
+                            if (currentPage != Page.TASKS || effortField.getScene() == null) return;
+                            if (effortEstimate.accept(request, result))
+                                statusLabel.setText(result.error() == null
+                                        ? "Estimate ready for review; task has not been saved" : result.error());
+                        });
+            } catch (RuntimeException failure) {
+                showError(errorMessage(failure));
+            }
+        });
 
         Button addButton = new Button("Add Task");
         Button updateButton = new Button("Update");
@@ -595,54 +655,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
 
     private Node createAiAssistantPage() {
         boolean aiAvailable = controller.isAiAvailable();
-        ComboBox<Task> effortTask = new ComboBox<>(
-                FXCollections.observableArrayList(
-                        controller.getTasks()));
-        effortTask.setConverter(taskConverter());
-        TextField suggestedEffort = new TextField();
-        suggestedEffort.setPromptText("Suggested hours appear here");
-        Button suggestEffortButton = new Button("Suggest Effort");
-        Button applyEffortButton = new Button("Apply Reviewed Estimate");
-        applyEffortButton.setDisable(true);
-        suggestEffortButton.disableProperty().bind(
-                effortTask.valueProperty().isNull().or(aiBusy).or(new javafx.beans.property.SimpleBooleanProperty(!aiAvailable)));
-        suggestEffortButton.setOnAction(event -> {
-            try {
-                Task selected = requiredValue(effortTask.getValue(), "Task");
-                runAiAction(
-                        suggestEffortButton,
-                        "Requesting effort suggestion...",
-                        () -> controller.requestEffortSuggestion(selected),
-                        hours -> {
-                            if (effortTask.getValue() != selected) return;
-                            suggestedEffort.setText(Double.toString(hours));
-                            applyEffortButton.setDisable(false);
-                            statusLabel.setText(
-                                    "Effort suggestion ready; edit or apply it");
-                        });
-            } catch (RuntimeException exception) {
-                showError(errorMessage(exception));
-            }
-        });
-        applyEffortButton.setOnAction(event -> executeAction(
-                "Task estimate updated by user confirmation", () -> {
-                    Task selected = requiredValue(effortTask.getValue(), "Task");
-                    double hours = positiveDouble(
-                            suggestedEffort, "Reviewed estimate");
-                    selected.setEstimatedHours(hours);
-                    controller.updateTask(selected);
-                }));
-        effortTask.valueProperty().addListener((obs, oldTask, newTask) -> {
-            applyEffortButton.setDisable(true);
-            suggestedEffort.clear();
-        });
-        GridPane effortForm = createFormGrid();
-        addFormRow(effortForm, 0, "Task", effortTask);
-        addFormRow(effortForm, 1, "Reviewed estimate", suggestedEffort);
-        VBox effortPanel = createEditor(
-                "Adaptive Effort Suggestion", new VBox(8, new Label("Select a task to request an effort suggestion."), effortForm),
-                suggestEffortButton, applyEffortButton);
-
         TextArea scheduleQuestion = new TextArea();
         scheduleQuestion.setPromptText(
                 "Ask why a task was prioritized or placed at a certain time");
@@ -725,22 +737,15 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         VBox schedulePanel = createEditor(
                 "Schedule Advice and Recovery", scheduleAiPanel);
 
-        HBox secondaryPanels = new HBox(16, effortPanel, schedulePanel);
-        HBox.setHgrow(effortPanel, Priority.ALWAYS);
-        HBox.setHgrow(schedulePanel, Priority.ALWAYS);
-        TitledPane additionalAiTools = new TitledPane(
-                "Other tools: effort estimate, schedule advice, and replanning",
-                secondaryPanels);
-        additionalAiTools.setExpanded(false);
         Label configurationNote = new Label(aiAvailable
                 ? "AI is ready. Suggestions use your current planning data; review before applying."
                 : "Gemini is not configured. Add GEMINI_API_KEY to your local .env file and restart PlanPilot.");
         configurationNote.setWrapText(true);
         configurationNote.getStyleClass().add("page-instruction");
-        VBox content = new VBox(18, configurationNote, additionalAiTools);
+        VBox content = new VBox(18, configurationNote, schedulePanel);
         return createPage(
                 "AI Tools",
-                "Optional help with effort estimates and schedule decisions.",
+                "Schedule explanations, recovery advice, and replanning. Effort estimates are available on Tasks.",
                 content);
     }
 
@@ -1274,7 +1279,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         warning.setWrapText(true);
         TitledPane taskSummary = new TitledPane("Task progress (" + tasks.size() + ") — confirmed hours", taskCards);
         taskSummary.setExpanded(false);
-        VBox content = new VBox(16, totals, outcomes, inferenceNote, warning, sessionsPanel, taskSummary);
+        VBox content = new VBox(16, totals, outcomes, inferenceNote, warning, taskSummary, sessionsPanel);
         return createPage("Progress", "Confirm sessions by task. Recorded results stay in History and can be corrected there.", content);
     }
 

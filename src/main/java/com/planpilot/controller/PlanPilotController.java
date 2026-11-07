@@ -303,6 +303,12 @@ public class PlanPilotController {
         checkpointWorkspace();
     }
 
+    public boolean hasPersonalizedEffortHistory(Task task) {
+        Objects.requireNonNull(task, "Task cannot be null.");
+        if (effortEstimator == null) throw new UnsupportedOperationException("Effort estimation is not configured.");
+        return effortEstimator.calculateHistoricalAverage(task, progressService.getHistory()).isPresent();
+    }
+
     public double requestEffortSuggestion(Task task) {
         Objects.requireNonNull(task, "Task cannot be null.");
         if (effortEstimator == null) {
@@ -335,7 +341,8 @@ public class PlanPilotController {
         return planningAgent.explainSchedule(
                 question,
                 schedule,
-                availabilityService.getAvailability(windowStart, windowEnd), progressService.getHistory());
+                availabilityService.getAvailability(windowStart, windowEnd), progressService.getHistory(),
+                scheduleService.assessCurrentPriorities());
     }
 
     public RecoveryPlan requestRecoverySuggestions(

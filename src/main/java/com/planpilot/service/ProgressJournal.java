@@ -137,6 +137,7 @@ final class ProgressJournal {
             ObjectNode n = node.putObject("schedule");
             n.put("id", schedule.getId()); n.put("start", schedule.getStartDate().toString());
             n.put("end", schedule.getEndDate().toString()); n.put("status", schedule.getStatus().name());
+            schedule.getDecisionEvidence().ifPresent(evidence -> n.set("decisionEvidence", JSON.valueToTree(evidence)));
             ArrayNode ids = n.putArray("sessionIds");
             schedule.getStudyBlocks().forEach(block -> ids.add(block.getId()));
         }
@@ -145,7 +146,7 @@ final class ProgressJournal {
     }
 
     private static WorkspaceSnapshot readWorkspace(JsonNode node, Map<String, Course> knownCourses,
-                                                    Map<String, StudyBlock> sessions) {
+                                                    Map<String, StudyBlock> sessions) throws IOException {
         List<Course> courses = new ArrayList<>();
         for (JsonNode n : node.required("courses")) courses.add(Objects.requireNonNull(knownCourses.get(n.required("id").asText())));
         List<AvailabilityBlock> availability = new ArrayList<>();
@@ -162,6 +163,8 @@ final class ProgressJournal {
             JsonNode n = node.get("schedule");
             schedule = new Schedule(n.required("id").asText(), LocalDate.parse(n.required("start").asText()),
                     LocalDate.parse(n.required("end").asText()));
+            if (n.hasNonNull("decisionEvidence"))
+                schedule.setDecisionEvidence(JSON.treeToValue(n.get("decisionEvidence"), SchedulingEvidence.class));
             Set<String> ids = new HashSet<>();
             for (JsonNode id : n.required("sessionIds")) {
                 if (!ids.add(id.asText())) throw new IllegalArgumentException("Duplicate schedule session");

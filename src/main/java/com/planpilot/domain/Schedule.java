@@ -11,6 +11,16 @@ public class Schedule {
     private final LocalDate endDate;
     private final List<StudyBlock> studyBlocks = new ArrayList<>();
     private ScheduleStatus status;
+    private SchedulingEvidence decisionEvidence;
+
+    public java.util.Optional<SchedulingEvidence> getDecisionEvidence() {
+        return java.util.Optional.ofNullable(decisionEvidence);
+    }
+
+    public void setDecisionEvidence(SchedulingEvidence evidence) {
+        if (decisionEvidence != null) throw new IllegalStateException("Generation evidence cannot be replaced.");
+        decisionEvidence = Objects.requireNonNull(evidence, "Decision evidence cannot be null.");
+    }
 
     public Schedule(String id, LocalDate startDate, LocalDate endDate) {
         this.id = requireText(id);

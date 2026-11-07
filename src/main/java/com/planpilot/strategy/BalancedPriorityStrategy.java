@@ -22,35 +22,29 @@ public class BalancedPriorityStrategy implements PriorityStrategy {
 
     @Override
     public double calculatePriority(Task task) {
-        Objects.requireNonNull(task, "Task cannot be null.");
-
-        double urgencyScore = calculateUrgency(task);
-        double effortScore = Math.min(20.0, task.getRemainingHours() * 2.0);
-        double difficultyScore = task.getDifficulty() * 2.0;
-        double importanceScore = importanceScore(task.getUserImportance());
-        double progressScore = task.getEstimatedHours() == 0
-                ? 0
-                : 10.0 * task.getRemainingHours() / task.getEstimatedHours();
-        double assessmentScore = task instanceof AcademicTask academicTask
-                ? academicTask.getAssessmentWeight() * 0.2
-                : 0;
-
-        return urgencyScore
-                + effortScore
-                + difficultyScore
-                + importanceScore
-                + progressScore
-                + assessmentScore;
+        return evaluate(task, LocalDateTime.now(clock)).score();
     }
 
-    private double calculateUrgency(Task task) {
-        LocalDateTime now = LocalDateTime.now(clock);
-        long minutesUntilDeadline = Duration.between(now, task.getDeadline()).toMinutes();
-        if (minutesUntilDeadline <= 0) {
-            return 40.0;
-        }
-        double daysUntilDeadline = minutesUntilDeadline / (24.0 * 60.0);
-        return 40.0 / (1.0 + daysUntilDeadline);
+    @Override
+    public PriorityEvaluation evaluate(Task task, LocalDateTime referenceTime) {
+        Objects.requireNonNull(task, "Task cannot be null.");
+        Objects.requireNonNull(referenceTime, "Priority reference time cannot be null.");
+        var contributions = new java.util.LinkedHashMap<String, Double>();
+        long minutes = Duration.between(referenceTime, task.getDeadline()).toMinutes();
+        contributions.put("deadlineUrgency", minutes <= 0 ? 40.0 : 40.0 / (1.0 + minutes / 1440.0));
+        contributions.put("remainingEffort", Math.min(20.0, task.getRemainingHours() * 2.0));
+        contributions.put("difficulty", task.getDifficulty() * 2.0);
+        contributions.put("userImportance", importanceScore(task.getUserImportance()));
+        contributions.put("unfinishedProportion", task.getEstimatedHours() == 0 ? 0.0
+                : 10.0 * task.getRemainingHours() / task.getEstimatedHours());
+        contributions.put("assessmentWeight", task instanceof AcademicTask academic ? academic.getAssessmentWeight() * .2 : 0.0);
+        // Preserve the formula's original addition order.
+        double score = contributions.values().stream().reduce(0.0, Double::sum);
+        return new PriorityEvaluation(score, contributions,
+                "Sum of: deadline urgency = 40/(1 + days until deadline), capped at 40 for expired deadlines; "
+                + "remaining effort = min(20, 2*remaining hours); difficulty = 2*difficulty; "
+                + "user importance LOW/MEDIUM/HIGH = 0/10/20; unfinished proportion = 10*remaining/estimated; "
+                + "academic assessment weight = 0.2*percentage (zero for GeneralTask).");
     }
 
     private double importanceScore(PriorityLevel importance) {
