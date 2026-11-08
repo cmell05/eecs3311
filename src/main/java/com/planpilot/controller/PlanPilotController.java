@@ -226,6 +226,10 @@ public class PlanPilotController {
         return scheduleService.getCurrentInfeasibility();
     }
 
+    public boolean hasCurrentSchedule() {
+        return scheduleService.findCurrentSchedule().isPresent();
+    }
+
     public java.util.Optional<Schedule> getCurrentSchedule() {
         return scheduleService.findCurrentSchedule();
     }

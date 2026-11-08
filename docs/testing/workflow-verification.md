@@ -109,3 +109,36 @@ live Gemini wording or modify personal workspace data.
 7. With Gemini unavailable, confirm a readable error and unchanged manual/saved
    hours. Check AI Tools directly shows schedule advice, recovery, and replan
    controls with no expansion toggle and no duplicate effort panel.
+
+
+## AI Tools readiness
+
+Generate a schedule, then open AI Tools. Explain Schedule must be enabled even
+before typing a question, including for restored, outdated, or partial schedules.
+A blank question is validated on click. Without a schedule, an invoked action
+must show “Generate a schedule first.” Explain reports missing AI configuration
+or a request already in progress on click instead of misrepresenting schedule
+readiness.
+
+Recommend Replan uses the controller's current schedule plus AI/busy safeguards.
+Apply Recommended Replan requires a recommendation for unchanged planning data.
+Changing tasks/progress or generating another plan invalidates old recommendations
+and late responses. Recovery uses the controller's actual current infeasibility;
+a feasible or outdated plan must not retain recovery readiness from an old error.
+Opening pages and observer updates synchronize the displayed schedule and warnings
+with the controller. These readiness changes never generate a schedule themselves.
+
+
+## Recovery when Gemini cannot respond
+
+After generating an infeasible plan, AI Tools shows **Review Recovery Actions**
+independently of AI configuration or a running request. It opens the same manual
+review dialog as **Resolve unscheduled work** on Schedule. Adding time, extending
+the window, deferring work, and keeping the partial plan require no AI advice.
+
+If **Suggest Workload Recovery** times out, returns unusable advice, or fails,
+show a readable reason and keep the manual review action available. Do not
+invent AI suggestions or apply changes automatically. A fake-client failure test
+then applies an explicit add-time recovery and verifies a revised valid plan.
+Timeout transport tests use no live API and verify that sensitive details are
+not echoed.

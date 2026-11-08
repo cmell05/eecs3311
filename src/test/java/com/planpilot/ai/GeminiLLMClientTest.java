@@ -156,4 +156,17 @@ class GeminiLLMClientTest {
         assertEquals("system", fake.getSystemInstruction());
         assertEquals("prompt", fake.getUserPrompt());
     }
+    @Test void timeoutIsReportedClearlyWithoutEchoingRequestDetails() {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        var client = new GeminiLLMClient("secret-test-key", request -> {
+            calls.incrementAndGet();
+            throw new java.net.http.HttpTimeoutException("sensitive request contents");
+        }, objectMapper, millis -> { throw new AssertionError("Do not retry a timeout indefinitely"); });
+        var failure = assertThrows(LLMClientException.class, () -> client.generateText("system", "private input"));
+        assertEquals("Gemini took too long to respond. Please try again shortly.", failure.getMessage());
+        assertEquals(1, calls.get());
+        assertFalse(failure.getMessage().contains("secret-test-key"));
+        assertFalse(failure.getMessage().contains("sensitive request"));
+    }
+
 }

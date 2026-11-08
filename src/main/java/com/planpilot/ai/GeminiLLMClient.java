@@ -74,6 +74,8 @@ public final class GeminiLLMClient implements LLMClient {
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new LLMClientException("Gemini request was interrupted.", exception);
+        } catch (java.net.http.HttpTimeoutException exception) {
+            throw new LLMClientException("Gemini took too long to respond. Please try again shortly.", exception);
         } catch (IOException exception) {
             throw new LLMClientException(
                     "Unable to communicate with the Gemini API.", exception);

@@ -82,9 +82,8 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private LocalDate planningEnd = LocalDate.now().plusDays(7);
     private String scheduleWarning = "";
     private boolean scheduleMayBeOutdated;
-    private boolean scheduleGenerationInProgress;
     private ScheduleInfeasibleException lastInfeasibility;
-    private ReplanRecommendation pendingReplanRecommendation;
+    private AiToolsState aiToolsState;
     private final java.util.Map<Page, Button> navigationButtons =
             new java.util.EnumMap<>(Page.class);
 
@@ -98,14 +97,8 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         PlanPilotApplicationContext context =
                 PlanPilotApplicationFactory.createDefault();
         controller = context.controller();
-        displayedSchedule = controller.getCurrentSchedule().orElse(null);
-        lastInfeasibility = controller.getCurrentInfeasibility().orElse(null);
-        if (displayedSchedule != null) {
-            planningStart = displayedSchedule.getStartDate();
-            planningEnd = displayedSchedule.getEndDate();
-            scheduleMayBeOutdated = displayedSchedule.getStatus() == com.planpilot.domain.ScheduleStatus.OUTDATED;
-            if (lastInfeasibility != null) scheduleWarning = partialPlanMessage(lastInfeasibility);
-        }
+        aiToolsState = new AiToolsState(controller);
+        syncPlanningState();
         eventPublisher = context.eventPublisher();
         eventPublisher.subscribe(this);
 
@@ -149,13 +142,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     public void onPlanningStateChanged() {
         Runnable refresh = () -> {
             if (root != null) {
-                if (!scheduleGenerationInProgress) {
-                    pendingReplanRecommendation = null;
-                    lastInfeasibility = null;
-                }
-                if (displayedSchedule != null && !scheduleGenerationInProgress) {
-                    scheduleMayBeOutdated = displayedSchedule.getStatus() == com.planpilot.domain.ScheduleStatus.OUTDATED;
-                }
+                aiToolsState.planningChanged();
                 showPage(currentPage);
                 statusLabel.setText(scheduleMayBeOutdated
                         ? "Planning state updated; the schedule may be outdated"
@@ -193,7 +180,22 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         return navigation;
     }
 
+    private void syncPlanningState() {
+        Schedule previous = displayedSchedule;
+        displayedSchedule = controller.getCurrentSchedule().orElse(null);
+        lastInfeasibility = controller.getCurrentInfeasibility().orElse(null);
+        scheduleMayBeOutdated = displayedSchedule != null
+                && displayedSchedule.getStatus() == com.planpilot.domain.ScheduleStatus.OUTDATED;
+        scheduleWarning = lastInfeasibility == null ? "" : partialPlanMessage(lastInfeasibility);
+        if (displayedSchedule != null && (previous == null || !previous.getId().equals(displayedSchedule.getId()))) {
+            planningStart = displayedSchedule.getStartDate();
+            planningEnd = displayedSchedule.getEndDate();
+        }
+        aiToolsState.refresh();
+    }
+
     private void showPage(Page page) {
+        syncPlanningState();
         currentPage = page;
         navigationButtons.forEach((item, button) -> {
             button.getStyleClass().remove("nav-button-active");
@@ -403,7 +405,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 () -> !controller.isAiAvailable() ? "Configure Gemini to enable optional AI estimates."
                         : selectedTask.get() == null ? "Optional: estimate from the current task form."
                         : "Uses the saved task details. Save edits first to include changes.", selectedTask));
-        VBox estimatedHoursInput = new VBox(7, effortField, estimateEffortButton, estimateBasis,
+        VBox effortAssistance = new VBox(7, estimateEffortButton, estimateBasis,
                 suggestionLabel, effortMessage, estimateActions);
         ComboBox<Integer> difficultyField = new ComboBox<>(
                 FXCollections.observableArrayList(1, 2, 3, 4, 5));
@@ -432,9 +434,11 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         addFormRow(form, 1, "Task title", titleField);
         addFormRow(form, 2, "Due date", deadlineDate);
         addFormRow(form, 3, "Due time", deadlineTime);
-        addFormRow(form, 4, "Estimated hours", estimatedHoursInput);
-        addFormRow(form, 5, "Difficulty (1–5)", difficultyField);
-        addFormRow(form, 6, "Importance", importanceField);
+        addFormRow(form, 4, "Estimated\nhours", effortField);
+        form.add(effortAssistance, 1, 5);
+        GridPane.setHgrow(effortAssistance, Priority.ALWAYS);
+        addFormRow(form, 6, "Difficulty (1–5)", difficultyField);
+        addFormRow(form, 7, "Importance", importanceField);
         GridPane detailsForm = createFormGrid();
         addFormRow(detailsForm, 0, "Course", courseField);
         addFormRow(detailsForm, 1, "Assessment weight", weightInput);
@@ -664,73 +668,97 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         aiOutput.setWrapText(true);
         aiOutput.setPrefRowCount(7);
         Button explainButton = new Button("Explain Schedule");
-        explainButton.disableProperty().bind(scheduleQuestion.textProperty().isEmpty()
-                .or(javafx.beans.binding.Bindings.createBooleanBinding(
-                        () -> scheduleQuestion.getText().isBlank(), scheduleQuestion.textProperty()))
-                .or(aiBusy).or(new javafx.beans.property.SimpleBooleanProperty(!aiAvailable || displayedSchedule == null || lastInfeasibility != null)));
+        // Presence of the application's actual schedule is the only disable condition.
+        explainButton.disableProperty().bind(aiToolsState.hasScheduleProperty().not());
         explainButton.setOnAction(event -> {
-            String question = scheduleQuestion.getText() == null
-                    ? "" : scheduleQuestion.getText().trim();
-            if (question.isBlank()) {
-                showError("Schedule question is required.");
-                return;
-            }
-            runAiAction(
-                    explainButton,
-                    "Generating grounded explanation...",
-                    () -> controller.explainSchedule(question),
-                    explanation -> {
+            if (!controller.hasCurrentSchedule()) { showError("Generate a schedule first."); return; }
+            String question = scheduleQuestion.getText() == null ? "" : scheduleQuestion.getText().trim();
+            if (question.isBlank()) { showError("Schedule question is required."); return; }
+            if (!controller.isAiAvailable()) { showError("Configure Gemini to request AI explanations."); return; }
+            if (aiBusy.get()) { showError("An AI request is already running. Please wait."); return; }
+            AiToolsState.Request request = aiToolsState.captureRequest();
+            runAiAction(explainButton, "Generating grounded explanation...",
+                    () -> controller.explainSchedule(question), explanation -> {
+                        if (currentPage != Page.AI_ASSISTANT || aiOutput.getScene() == null) return;
+                        if (!aiToolsState.isCurrent(request)) {
+                            aiOutput.setText("Planning data changed. Ask again for an updated explanation.");
+                            return;
+                        }
                         aiOutput.setText(explanation);
                         statusLabel.setText("Schedule explanation ready");
                     });
         });
 
+        Button reviewRecoveryButton = new Button("Review Recovery Actions");
+        reviewRecoveryButton.disableProperty().bind(aiToolsState.hasRecoveryProperty().not());
+        reviewRecoveryButton.setOnAction(event -> showRecoveryDialog(null));
+
         Button recoveryButton = new Button("Suggest Workload Recovery");
-        recoveryButton.disableProperty().bind(aiBusy.or(new javafx.beans.property.SimpleBooleanProperty(!aiAvailable || lastInfeasibility == null)));
+        recoveryButton.disableProperty().bind(aiToolsState.hasRecoveryProperty().not().or(aiBusy)
+                .or(new javafx.beans.property.SimpleBooleanProperty(!aiAvailable)));
         recoveryButton.setOnAction(event -> {
-            ScheduleInfeasibleException requestedFor = lastInfeasibility;
+            ScheduleInfeasibleException requestedFor = controller.getCurrentInfeasibility().orElse(null);
+            if (requestedFor == null) {
+                showError("Generate or replan an infeasible schedule first."); return;
+            }
+            AiToolsState.Request request = aiToolsState.captureRequest();
             runAiAction(recoveryButton, "Generating recovery suggestions...",
                     () -> controller.requestRecoverySuggestions(requestedFor), recovery -> {
-                        if (lastInfeasibility != requestedFor) {
+                        if (currentPage != Page.AI_ASSISTANT || aiOutput.getScene() == null) return;
+                        if (!aiToolsState.isCurrent(request) || controller.getCurrentInfeasibility().isEmpty()) {
                             aiOutput.setText("Planning data changed. Generate or replan again before requesting fresh recovery advice.");
                             return;
                         }
                         aiOutput.setText(formatRecoveryPlan(recovery));
                         statusLabel.setText("Recovery advice ready; choose whether to apply a change.");
                         showRecoveryDialog(recovery);
+                    }, failure -> {
+                        if (currentPage != Page.AI_ASSISTANT || aiOutput.getScene() == null) return;
+                        if (!aiToolsState.isCurrent(request) || controller.getCurrentInfeasibility().isEmpty()) {
+                            aiOutput.setText("Planning data changed. Generate or replan again before requesting fresh recovery advice.");
+                            return;
+                        }
+                        aiOutput.setText(recoveryAdviceUnavailableMessage(failure));
+                        statusLabel.setText("AI advice unavailable; Review Recovery Actions is still available.");
                     });
         });
 
         Button recommendReplanButton = new Button("Recommend Replan Option");
-        recommendReplanButton.disableProperty().bind(aiBusy.or(new javafx.beans.property.SimpleBooleanProperty(!aiAvailable || displayedSchedule == null)));
+        recommendReplanButton.disableProperty().bind(aiToolsState.hasScheduleProperty().not().or(aiBusy)
+                .or(new javafx.beans.property.SimpleBooleanProperty(!aiAvailable)));
         Button applyReplanButton = new Button("Apply Recommended Replan");
-        applyReplanButton.setDisable(pendingReplanRecommendation == null);
-        recommendReplanButton.setOnAction(event -> runAiAction(
-                recommendReplanButton,
-                "Evaluating replanning options...",
-                controller::requestReplanRecommendation,
-                recommendation -> {
-                    pendingReplanRecommendation = recommendation;
-                    aiOutput.setText(formatReplanRecommendation(recommendation));
-                    applyReplanButton.setDisable(false);
-                    statusLabel.setText(
-                            "Replan recommendation ready; review before applying");
-                }));
+        applyReplanButton.disableProperty().bind(aiToolsState.canApplyRecommendationProperty().not().or(aiBusy));
+        if (aiToolsState.recommendation() != null)
+            aiOutput.setText(formatReplanRecommendation(aiToolsState.recommendation()));
+        recommendReplanButton.setOnAction(event -> {
+            if (!controller.hasCurrentSchedule()) { showError("Generate a schedule first."); return; }
+            AiToolsState.Request request = aiToolsState.captureRequest();
+            runAiAction(recommendReplanButton, "Evaluating replanning options...",
+                    controller::requestReplanRecommendation, recommendation -> {
+                        if (currentPage != Page.AI_ASSISTANT || aiOutput.getScene() == null) return;
+                        if (!aiToolsState.acceptRecommendation(request, recommendation)) {
+                            aiOutput.setText("Planning data changed. Request a new replanning recommendation.");
+                            return;
+                        }
+                        aiOutput.setText(formatReplanRecommendation(recommendation));
+                        statusLabel.setText("Replan recommendation ready; review before applying");
+                    });
+        });
         applyReplanButton.setOnAction(event -> {
-            if (pendingReplanRecommendation == null) {
-                showError("Request a replanning recommendation first.");
-                return;
-            }
-            replanSchedule(pendingReplanRecommendation.recommendedOption());
-            pendingReplanRecommendation = null;
+            aiToolsState.refresh();
+            if (!controller.hasCurrentSchedule()) { showError("Generate a schedule first."); return; }
+            ReplanRecommendation recommendation = aiToolsState.recommendation();
+            if (recommendation == null) { showError("Request a replanning recommendation first."); return; }
+            aiToolsState.clearRecommendation();
+            replanSchedule(recommendation.recommendedOption());
         });
 
         javafx.scene.layout.FlowPane scheduleActions = new javafx.scene.layout.FlowPane(
-                8, 8, explainButton, recoveryButton,
+                8, 8, explainButton, recoveryButton, reviewRecoveryButton,
                 recommendReplanButton, applyReplanButton);
         VBox scheduleAiPanel = new VBox(
-                8, new Label(displayedSchedule == null ? "Generate a schedule first to ask questions or request replanning." : "Ask about your current schedule."),
-                new Label(lastInfeasibility == null ? "Recovery suggestions appear after an infeasible schedule is detected." : "An infeasible schedule was detected; recovery advice is available."),
+                8, new Label(controller.hasCurrentSchedule() ? "Ask about your current schedule." : "Generate a schedule first."),
+                new Label(controller.getCurrentInfeasibility().isEmpty() ? "Recovery suggestions appear after an infeasible schedule is detected." : "Some work does not fit. Review Recovery Actions works without AI; AI advice is optional."),
                 new Label("Schedule question:"), scheduleQuestion,
                 scheduleActions, new Label("AI response:"), aiOutput);
         VBox.setVgrow(aiOutput, Priority.ALWAYS);
@@ -974,32 +1002,28 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             if (controller.getOpenTasks().isEmpty()) {
                 throw new IllegalStateException("No unfinished tasks are available to schedule. Add a task with remaining effort first.");
             }
-            scheduleGenerationInProgress = true;
             displayedSchedule = controller.generateSchedule(planningStart, planningEnd);
             scheduleWarning = "";
             scheduleMayBeOutdated = false;
             lastInfeasibility = null;
-            pendingReplanRecommendation = null;
+            aiToolsState.clearRecommendation();
             showPage(Page.SCHEDULE);
             statusLabel.setText("Schedule generated");
         } catch (ScheduleInfeasibleException exception) {
             displayedSchedule = exception.getPartialSchedule();
             lastInfeasibility = exception;
-            pendingReplanRecommendation = null;
+            aiToolsState.clearRecommendation();
             scheduleWarning = partialPlanMessage(exception);
             scheduleMayBeOutdated = false;
             showPage(Page.SCHEDULE);
             statusLabel.setText("Partial plan saved — more available study time is needed.");
         } catch (RuntimeException exception) {
             showError(errorMessage(exception));
-        } finally {
-            scheduleGenerationInProgress = false;
         }
     }
 
     private void replanSchedule(ReplanOption option) {
         try {
-            scheduleGenerationInProgress = true;
             displayedSchedule = controller.requestReplan(
                     requiredValue(option, "Replan option"));
             planningStart = displayedSchedule.getStartDate();
@@ -1007,13 +1031,13 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             scheduleWarning = "";
             scheduleMayBeOutdated = false;
             lastInfeasibility = null;
-            pendingReplanRecommendation = null;
+            aiToolsState.clearRecommendation();
             showPage(Page.SCHEDULE);
             statusLabel.setText("Remaining work replanned. Unchanged inputs may produce the same session times; reported sessions are kept in history.");
         } catch (ScheduleInfeasibleException exception) {
             displayedSchedule = exception.getPartialSchedule();
             lastInfeasibility = exception;
-            pendingReplanRecommendation = null;
+            aiToolsState.clearRecommendation();
             planningStart = displayedSchedule.getStartDate();
             planningEnd = displayedSchedule.getEndDate();
             scheduleWarning = partialPlanMessage(exception);
@@ -1022,8 +1046,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             statusLabel.setText("Partial replan saved. Your recorded progress is preserved.");
         } catch (RuntimeException exception) {
             showError(errorMessage(exception));
-        } finally {
-            scheduleGenerationInProgress = false;
         }
     }
 
@@ -1035,6 +1057,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     }
 
     private void showRecoveryDialog(RecoveryPlan advice) {
+        syncPlanningState();
         ScheduleInfeasibleException failure = lastInfeasibility;
         if (failure == null) { showError("Generate or replan an infeasible schedule first."); return; }
         Schedule partial = failure.getPartialSchedule();
@@ -1124,7 +1147,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     }
 
     private void applyRecovery(com.planpilot.service.RecoveryRequest request) {
-        scheduleGenerationInProgress = true;
         try {
             displayedSchedule = controller.applyRecovery(request);
             planningStart = displayedSchedule.getStartDate(); planningEnd = displayedSchedule.getEndDate();
@@ -1138,7 +1160,6 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             scheduleWarning = partialPlanMessage(failure); scheduleMayBeOutdated = false;
             showPage(Page.SCHEDULE); statusLabel.setText("Change applied; some work still needs recovery.");
         } catch (RuntimeException failure) { showError(errorMessage(failure)); }
-        finally { scheduleGenerationInProgress = false; }
     }
 
     private void refreshInferredProgress() {
@@ -1465,6 +1486,9 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
     private void addFormRow(GridPane form, int row, String label, Node field) {
         Label fieldLabel = new Label(label + ":");
         fieldLabel.getStyleClass().add("field-label");
+        if (label.contains("\n")) {
+            fieldLabel.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+        }
         form.add(fieldLabel, 0, row);
         form.add(field, 1, row);
         GridPane.setHgrow(field, Priority.ALWAYS);
@@ -1523,6 +1547,15 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
             String progressMessage,
             Supplier<T> operation,
             Consumer<T> onSuccess) {
+        runAiAction(trigger, progressMessage, operation, onSuccess, failure -> showError(errorMessage(failure)));
+    }
+
+    private <T> void runAiAction(
+            Button trigger,
+            String progressMessage,
+            Supplier<T> operation,
+            Consumer<T> onSuccess,
+            Consumer<Throwable> onFailure) {
         if (aiBusy.get()) return;
         aiBusy.set(true);
         boolean bound = trigger.disableProperty().isBound();
@@ -1546,7 +1579,7 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
         backgroundTask.setOnFailed(event -> {
             aiBusy.set(false);
             if (!bound) trigger.setDisable(false);
-            showError(errorMessage(backgroundTask.getException()));
+            onFailure.accept(backgroundTask.getException());
         });
         Thread worker = new Thread(backgroundTask, "planpilot-ai-request");
         worker.setDaemon(true);
@@ -1592,6 +1625,20 @@ public class PlanPilotGUI extends Application implements PlanningObserver {
                 ? "" : proposal.assessmentWeight().toString());
         typeField.setValue(proposal.academicTaskType());
         updateAcademicFields.run();
+    }
+
+    static String recoveryAdviceUnavailableMessage() {
+        return recoveryAdviceUnavailableMessage(null);
+    }
+
+    static String recoveryAdviceUnavailableMessage(Throwable failure) {
+        String detail = failure == null || failure.getMessage() == null ? "" : failure.getMessage();
+        String reason = detail.contains("took too long") ? "Gemini took too long to respond."
+                : detail.contains("temporarily unavailable") ? "Gemini is temporarily unavailable."
+                : detail.contains("invalid recovery") ? "AI could not prepare usable recovery advice."
+                : "AI recovery advice is unavailable right now.";
+        return reason + " Select Review Recovery Actions to add available time, "
+                + "extend the planning window, defer a task, or keep the current plan. Nothing has been changed.";
     }
 
     static String formatRecoveryPlan(RecoveryPlan recovery) {
