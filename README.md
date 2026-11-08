@@ -4,11 +4,77 @@ PlanPilot is a Java 17 Maven project for the EECS3311 course project. It provide
 course and task management, deterministic schedule planning, progress tracking,
 CLI and JavaFX interfaces, and an extensible LLM integration layer.
 
+## Requirements and first run
+
+- **JDK 17** (including `javac`), with `JAVA_HOME` and `PATH` pointing to it.
+- **Apache Maven 3.9 or later**, available as `mvn` on your terminal's `PATH`.
+- A graphical desktop for the JavaFX GUI. The CLI can run without a desktop.
+- Internet access for Maven's first dependency download. AI actions additionally
+  need internet access and a local Gemini API key; deterministic features work
+  without a key.
+
+Check the installed tools:
+
+```sh
+java -version
+javac -version
+mvn -version
+```
+
+Clone the repository and run commands from its root (the folder containing
+`pom.xml`):
+
+```sh
+git clone https://github.com/cmell05/eecs3311.git planpilot
+cd planpilot
+mvn clean test
+```
+
+Maven downloads JavaFX, Jackson, dotenv-java, JUnit, and build plugins using the
+versions in `pom.xml`. No separate JavaFX SDK or database installation is needed.
+Tests use fake LLM clients/transports and never call the live Gemini API.
+
+Launch either interface:
+
+```sh
+# Graphical interface
+mvn javafx:run
+
+# Command-line interface
+mvn -q compile exec:java -Dexec.mainClass=com.planpilot.cli.PlanPilotCLI
+```
+
+A first launch starts with an empty workspace. Configure Gemini below to enable
+AI task entry, effort estimation, schedule explanations, and AI advice.
+
+## Implemented features
+
+| Stage 1 ID | Feature | Deterministic / AI behavior |
+|---|---|---|
+| F01 | Course management | Add, list, edit, and delete courses; unique codes and linked-task deletion guards. |
+| F02 | Task management | Academic and General tasks, validation, editing/deletion, and status groups. |
+| F03 | Natural-language task entry | Gemini proposes task fields; review and explicit save are required. |
+| F04 | Availability and commitments | Manage available intervals and fixed commitments; reject invalid/contradictory intervals. |
+| F05 | Task prioritization | Strategy calculates scores from urgency, effort, difficulty, importance, progress, and academic weight. |
+| F06 | Study schedule generation | Deterministic allocation, session splitting, preferences, breaks, deadline bounds, and conflict checks. |
+| F07 | Conflict and workload recovery | Deterministic deficit detection and user-applied recovery; optional Gemini advice. |
+| F08 | Progress tracking | Confirm, partially complete, skip, infer, and correct sessions without double-counting. |
+| F09 | Assisted replanning | Outdated-state warnings and explicit replanning; optional AI recommendation. |
+| F10 | Adaptive effort estimation | Similar completed-task history plus Gemini; Tasks-page review before applying/saving. |
+| F11 | Schedule decision explanation | Gemini explains captured scheduling evidence and compares current priorities without changing the plan. |
+
+Local workspace persistence supports both interfaces. Courses, tasks, sessions,
+availability, preferences, and history are restored after restarting.
+
 ## Project Structure
 
 - `src/main/java/com/planpilot/` — domain, services, controllers, interfaces, and AI adapters
 - `src/test/java/com/planpilot/` — JUnit tests mirroring the production packages
+- `src/main/resources/com/planpilot/gui/planpilot.css` — JavaFX styling
+- `pom.xml` — Java 17 compiler settings, dependencies, and launch/test plugins
+- `.env.example` — safe local AI configuration template
 - `docs/stage1/` — Stage 1 design report supplied with the project
+- [Workflow verification guide](docs/testing/workflow-verification.md) — manual acceptance checks
 
 The project includes deterministic planning services, CLI and JavaFX interfaces,
 and a Gemini client adapter. User-facing AI workflows are implemented separately
@@ -19,12 +85,14 @@ from deterministic schedule generation.
 Copy `.env.example` to `.env`, then replace the placeholder with your local key:
 
 ```sh
-cp .env.example .env
+cp -n .env.example .env
 ```
 
-Set `GEMINI_API_KEY` in `.env` or in the process environment. Process environment
-values take precedence. The local `.env` file is ignored by Git; never commit a
-real API key. The adapter uses `gemini-3.5-flash-lite` through the Gemini REST API.
+If `.env` already exists, edit it rather than replacing it. Set `GEMINI_API_KEY`
+in `.env` or in the process environment. Process environment values take precedence. The application explicitly loads `.env` through
+dotenv-java from the working directory. The local `.env` file is ignored by Git;
+never commit a real API key or expose it in recordings. The adapter uses
+`gemini-3.5-flash-lite` through the Gemini REST API.
 
 After configuring the key, run this opt-in live check to verify the complete Java
 client path:
@@ -96,11 +164,12 @@ mvn -q compile exec:java \
 AI menu actions use the same controller facade as deterministic actions. Parsed
 tasks, effort changes, recovery actions, and replanning remain subject to explicit
 user confirmation. Course, task, and availability identifiers are generated by
-the application. When choosing a course, task, or study block, select it by its
-displayed name or numbered list entry; users do not need to enter internal IDs.
+the application. When choosing a course, task, or study block, select its
+numbered list entry; the labels show recognizable names, so users do not need to
+enter internal IDs.
 
 Use numbered choices rather than internal IDs. Dates use `YYYY-MM-DD`; date/time
-uses `YYYY-MM-DDTHH:MM`, for example `2026-11-06T13:00`. Invalid fields are
+uses `YYYY-MM-DDTHH:MM`, using 24-hour time. Always choose future dates for new study sessions. Invalid fields are
 retried. Type `/cancel` at a prompt to return to the main menu; ending input exits
 cleanly. Blank answers keep the displayed default when editing.
 
@@ -117,8 +186,8 @@ without a user action. **14** manages existing entries and lists availability.
 After an infeasible plan, choose a recovery action or keep the partial plan;
 AI recovery advice is optional (recovery choice **4**) and is never requested
 automatically. AI menu items **10–13** need local Gemini configuration; normal
-planning and progress work without it. Courses, tasks, availability, preferences, the active plan, and progress history
-are saved locally and restored after restart.
+planning and progress work without it. Courses, tasks, availability, preferences,
+the active plan, and progress history are saved locally and restored after restart.
 
 ## Run the GUI
 
@@ -132,9 +201,53 @@ The Tasks page can optionally use Gemini to fill the task form from a short
 description; review the fields and select **Add Task** to save it. The **AI Tools**
 page directly displays schedule explanations, workload recovery advice,
 and user-approved replanning recommendations without a collapsed tools panel.
-Gemini requests run in the background so the JavaFX interface remains responsive. Course, task, and
-availability IDs are generated automatically and kept out of the forms. Course
+Gemini requests run in the background so the JavaFX interface remains responsive.
+Course, task, and availability IDs are generated automatically and kept out of the forms. Course
 and task selectors display recognizable names instead of internal identifiers.
+
+## Example workflow
+
+For a reproducible manual example, let **D** be tomorrow and **E** the following
+day. Replace these labels with actual dates in the form or CLI; they are not
+literal accepted inputs.
+
+1. Add course `EECS3311` with name `Software Design`.
+2. Add an Academic task `Design report`: deadline **E at 17:00**, estimated hours
+   **2**, difficulty **3**, importance **MEDIUM**, assessment weight **20** (20%),
+   type **ASSIGNMENT**, linked to EECS3311. A General task omits academic fields.
+3. Add **Available time** on **D, 09:00–13:00**. A fixed commitment must not
+   overlap that available entry; split available time around commitments.
+4. Generate a schedule for **D through E**. Inspect two hours of study sessions
+   placed within the supplied availability before the deadline, with breaks
+   between sessions according to preferences.
+5. In Progress, select a one-hour session and record **Partial: 0.5**. Expect
+   **0.5 confirmed hours** and **1.5 task hours remaining**. The session moves to
+   History, and the schedule becomes outdated.
+6. Use **Replan remaining work** explicitly. Reported history stays available
+   for corrections; new sessions cover the remaining work if it fits.
+7. Close and reopen the same workspace to verify persistence.
+
+With Gemini configured, try **Fill form with AI** on Tasks, or ask AI Tools:
+“Which task should I focus on now, considering deadlines and remaining work?”
+Review every proposal before saving or applying it.
+
+## AI Tools controls
+
+The question box is used only by **Explain Schedule**. Other buttons do not
+need a typed prompt.
+
+| Control | How to use it |
+|---|---|
+| Explain Schedule | Generate a schedule, type a question, then click. Restored, partial, and outdated schedules can be explained; older plans may lack their original recorded rationale. |
+| Suggest Workload Recovery | After an infeasible plan, click for optional Gemini advice. Review any proposed action before applying. |
+| Review Recovery Actions | After an infeasible plan, click to choose recovery manually. This works without Gemini or while an AI request is pending. |
+| Recommend Replan Option | With an existing plan, click for an advisory recommendation. It does not regenerate the plan. |
+| Apply Recommended Replan | Review a valid recommendation, then explicitly apply it. Planning changes invalidate older recommendations. |
+
+Explain becomes clickable when a schedule exists; missing questions or AI
+configuration are reported on click. Other AI actions also require configured
+Gemini and an idle AI worker. Manual recovery does not require AI. A timeout or
+unusable AI response preserves task data and leaves manual recovery available.
 
 ## Adaptive effort estimation on Tasks (F10)
 
@@ -160,8 +273,12 @@ command remains available.
 Use JDK 17 and Maven, then run:
 
 ```sh
-mvn test
+mvn clean test
 ```
+
+This compiles the Java sources, copies resources into `target/`, and runs JUnit.
+The Maven GUI/CLI launch commands use the compiled classes and resolved
+dependencies. No prebuilt JAR is required to run the source submission.
 
 ## Progress tracking and local history
 
@@ -174,8 +291,7 @@ remaining task effort is preserved. Tentative inferred outcomes stay in
 **To confirm** until confirmed or corrected. Open **History**, expand a task,
 and select a session to correct its result. The correction ledger shown in the
 editor belongs to that selected session. Task bars and estimates are available
-under the expandable **Task progress** summary.
-
+under the expandable **Task progress** summary above the session tabs.
 
 The Progress page shows planned hours, confirmed completion, remaining effort,
 completed/incomplete tasks, and elapsed sessions awaiting confirmation. Task bars
@@ -236,8 +352,10 @@ one of these actions and select **Apply change and replan**:
   day after the current window ends, stays visible in Tasks, and is saved locally.
 - **Keep the current partial plan:** accept the current constraints without regeneration.
 
-AI Tools can suggest recovery actions and open the same review dialog. Advice
-alone never applies a change. If an accepted change still cannot fit all work,
+AI Tools offers **Review Recovery Actions** to open the same dialog directly,
+without an AI request. **Suggest Workload Recovery** optionally requests Gemini
+advice and opens the dialog after a usable response. Advice alone never applies
+a change. If an accepted change still cannot fit all work,
 the revised partial plan and remaining deficit are shown. Changed planning data
 requires a fresh generation/replan before an older recovery choice can be applied.
 Select a deferred task and use **Include deferred task again** to resume it, then
@@ -250,3 +368,84 @@ Course deletion is blocked while any active academic task references it, includi
 completed or deferred tasks. Reassign or delete those tasks first. Task deletion
 keeps reported progress history archived. Task edits preserve recorded progress;
 an estimate below completed effort is rejected.
+
+
+## Using a separate demo workspace
+
+The default save file is `.planpilot/progress.json`. To keep demo data separate,
+choose a different path. Use the same path to share the data between interfaces,
+and close one instance before opening the other against that file.
+
+```sh
+# GUI on macOS/Linux; JVM options are inherited by the JavaFX launcher
+JAVA_TOOL_OPTIONS='-Dplanpilot.progress.file=.planpilot/demo.json' mvn javafx:run
+
+# CLI using the same workspace
+mvn -q compile exec:java \
+  -Dexec.mainClass=com.planpilot.cli.PlanPilotCLI \
+  -Dplanpilot.progress.file=.planpilot/demo.json
+```
+
+For the GUI on PowerShell, set `$env:JAVA_TOOL_OPTIONS` to
+`-Dplanpilot.progress.file=.planpilot/demo.json` before running `mvn javafx:run`;
+remove that environment override afterward if you want to use the default file.
+Actual workspace files are local data, not required repository files. No initial
+save file, login, or database is needed to run a fresh installation.
+
+## Architecture and design patterns
+
+Both interfaces use `PlanPilotController` rather than calling services directly.
+The application factory wires services, persistence, observers, strategy, and the
+optional Gemini adapter. The AI workflows retrieve relevant task/history data,
+calculate deterministic summaries, validate structured model proposals, and route
+explicitly accepted recovery or replanning choices through application services.
+The resulting schedule is validated again before display.
+
+| Pattern | Implemented roles |
+|---|---|
+| MVC | GUI/CLI views, `PlanPilotController`, and domain/service models separate interaction from application behavior. |
+| Facade | `PlanPilotController` coordinates course, task, availability, schedule, progress, and AI operations. |
+| Strategy | `PriorityStrategy` and `BalancedPriorityStrategy` supply interchangeable priority evaluation to `SchedulePlanner`. |
+| Adapter | `GeminiLLMClient` implements provider-independent `LLMClient`; `PlanningAgent` and task parsing use that abstraction. |
+| Observer | `PlanningEventPublisher` notifies `PlanningObserver`; `PlanPilotGUI` refreshes views and outdated-state guidance. |
+
+The JSON journal stores local workspace snapshots atomically. AI receives relevant
+application context and returns proposals or explanations; deterministic services
+validate and apply user-approved operations.
+
+## Troubleshooting and limitations
+
+| Problem | Check |
+|---|---|
+| `mvn: command not found` | Install Maven and add its `bin` directory to `PATH`; check `mvn -version`. |
+| Java release/compiler error | `mvn -version` must use JDK 17. A Java runtime alone is insufficient; check `javac -version` and `JAVA_HOME`. |
+| First build cannot download dependencies | Maven needs access to its configured artifact repository. Offline mode works only after dependencies are cached. |
+| JavaFX cannot initialize a screen | Run the GUI in a graphical desktop session. Use the CLI for a headless environment. |
+| AI is unavailable | Check `GEMINI_API_KEY` locally, launch from the repository root, restart after configuration, and use the opt-in connection check. Do not print the key. |
+| Gemini is temporarily unavailable or times out | Retry later. Transient HTTP failures have bounded retries. Manual recovery and deterministic scheduling remain available. |
+| No work fits | Check future dates, task deadlines, planning window, AVAILABLE intervals, deferrals, session lengths, and breaks. Read the reported deficit before choosing recovery. |
+| Recovery is unavailable | Generate/replan an infeasible schedule with the current data first. Changed constraints invalidate previous recovery advice. |
+| Save file cannot be restored | The file is kept unchanged. Preserve it for investigation or use a separate workspace path rather than clearing personal data. |
+
+- Storage is local to one workspace file; it is intended for one running instance
+  per file, with no account system or multiuser synchronization.
+- The priority-first greedy planner does not search every alternative arrangement.
+  Deficit warnings report work the planner could not allocate under the supplied
+  constraints; users must explicitly choose recovery or replanning.
+- Inferred completion is tentative. Correct it when planned work did not happen.
+  Reported hours are bounded by the session duration and task estimate.
+- AI output and service availability vary. Task proposals require review; general
+  estimates without matching history are labelled non-personalized.
+- Original placement explanations require generation evidence. Older saved plans
+  can receive current priority comparisons, with explicit regeneration needed to
+  capture exact new placement reasons.
+
+## Project documentation and demonstrations
+
+The [Stage 1 design report](docs/stage1/PlanPilot%20-%20Stage%201%20Design%20Report.pdf)
+and [workflow verification guide](docs/testing/workflow-verification.md) are
+included. The Stage 2 implementation report and its feature-by-feature GUI/CLI
+video links are maintained separately by the project author and should be added
+for the final submission. This README does not claim those artifacts are already
+present. Reviewers can run the application and create the example data above
+without access to the author's personal workspace or credentials.
