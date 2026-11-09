@@ -442,10 +442,10 @@ validate and apply user-approved operations.
 
 ## Project documentation and demonstrations
 
-The [Stage 1 design report](docs/stage1/PlanPilot%20-%20Stage%201%20Design%20Report.pdf)
-and [workflow verification guide](docs/testing/workflow-verification.md) are
-included. The Stage 2 implementation report and its feature-by-feature GUI/CLI
-video links are maintained separately by the project author and should be added
-for the final submission. This README does not claim those artifacts are already
-present. Reviewers can run the application and create the example data above
+The [Stage 1 design report](docs/stage1/PlanPilot%20-%20Stage%201%20Design%20Report.pdf),
+[Stage 2 implementation report](docs/stage2/stage2-report.pdf), and
+[workflow verification guide](docs/testing/workflow-verification.md) are included.
+The Stage 2 report maps features to their implementation and includes a
+demonstration index with links to all eleven feature videos and a separate CLI
+recording. Reviewers can run the application and create the example data above
 without access to the author's personal workspace or credentials.
